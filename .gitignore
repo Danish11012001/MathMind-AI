@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Frontend
+node_modules/
+dist/
+
+# Secrets and local data
+.env
+.env.*
+!.env.example
+history.db
+
+.idea/
+*backup*.py
