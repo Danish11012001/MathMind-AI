@@ -1,5 +1,9 @@
-import json,sqlite3,uuid
+import json, os, sqlite3, uuid
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load the project-level .env during local development; Render uses dashboard env vars.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 from contextlib import closing
 from datetime import datetime,timezone
 from fastapi import FastAPI,HTTPException
@@ -8,7 +12,8 @@ from pydantic import BaseModel,Field
 from .math_agent import answer_math
 DB=Path(__file__).resolve().parent.parent/"history.db"
 app=FastAPI(title="Mathematical AI Reasoning Agent")
-app.add_middleware(CORSMiddleware,allow_origins=["http://localhost:5173"],allow_methods=["*"],allow_headers=["*"])
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if origin.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 def ts(): return datetime.now(timezone.utc).isoformat()
 def db():
  c=sqlite3.connect(DB);c.row_factory=sqlite3.Row;return c

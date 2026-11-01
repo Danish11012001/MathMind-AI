@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import json
+import os
 import re
 from typing import Any
 
@@ -22,9 +23,13 @@ from sympy.parsing.sympy_parser import (
 
 X, Y, Z = sp.symbols("x y z")
 SYMBOLS = {"x": X, "y": Y, "z": Z, "t": sp.Symbol("t")}
-MODEL = "qwen2.5:3b"
-URL = "http://localhost:11434/api/generate"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = (2, 18)
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 TRANSFORMATIONS = standard_transformations + (
     convert_xor,
@@ -274,6 +279,7 @@ def fallback(text: str) -> dict:
 
 
 def plan(text: str, history: list[dict] | None = None) -> dict:
+    """Plan a request with a hosted Groq model or local Ollama, then validate."""
     quick = fallback(text)
     if (quick.get("category"), quick.get("operation")) in OPS:
         return quick
@@ -283,31 +289,59 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
         for m in (history or [])[-4:]
     )[:1200]
     schema = (
-        "Return only JSON. Do not solve. Allowed operations: equation/solve(expression); "
-        "calculus/derivative(expression,variable), integral(expression,variable), "
-        "limit(expression,variable,point), partial_derivative(expression,variable); "
-        "algebra/simplify(expression), factor(expression), expand(expression), "
-        "evaluate(expression); matrix/determinant,inverse,transpose,rank,eigenvalues(matrix), "
+        "Return only a JSON object. Do not solve. Allowed operations: "
+        "equation/solve(expression); calculus/derivative(expression,variable), "
+        "integral(expression,variable), limit(expression,variable,point), "
+        "partial_derivative(expression,variable); algebra/simplify(expression), "
+        "factor(expression), expand(expression), evaluate(expression); "
+        "matrix/determinant,inverse,transpose,rank,eigenvalues(matrix), "
         "multiply/add/subtract(matrix_a,matrix_b); "
         "statistics/mean,median,mode,variance,standard_deviation(values); "
         "number_theory/gcd,lcm(values),prime_factors(value). "
-        "For unsupported requests use category unknown, operation unknown, clarification."
+        "For unsupported requests use category unknown, operation unknown, clarification. "
+        "Use keys category, operation, expression, variable, point, matrix, matrix_a, "
+        "matrix_b, values, value, clarification as applicable."
     )
     prompt = f"{schema}\nRecent context: {context}\nUser request: {text}"
     try:
-        response = requests.post(
-            URL,
-            json={
-                "model": MODEL, "prompt": prompt, "stream": False, "format": "json",
-                "options": {"temperature": 0, "num_predict": 180},
-            },
-            timeout=OLLAMA_TIMEOUT,
-        )
-        response.raise_for_status()
-        parsed = json.loads(response.json().get("response", "{}"))
-        if (parsed.get("category"), parsed.get("operation")) in OPS:
+        if LLM_PROVIDER == "groq":
+            if not GROQ_API_KEY:
+                raise RuntimeError("GROQ_API_KEY is not configured")
+            response = requests.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": GROQ_MODEL,
+                    "messages":[
+                        {"role":"system", "content":"You are a mathematical task planner. Output valid JSON only."},
+                        {"role":"user", "content":prompt},
+                    ],
+                    "temperature":0,
+                    "max_tokens":350,
+                    "response_format":{"type":"json_object"},
+                },
+                timeout=(5, 30),
+            )
+            response.raise_for_status()
+            content = response.json()["choices"][0]["message"]["content"]
+        elif LLM_PROVIDER == "ollama":
+            response = requests.post(
+                OLLAMA_URL,
+                json={
+                    "model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
+                    "format": "json", "options": {"temperature": 0, "num_predict": 220},
+                },
+                timeout=OLLAMA_TIMEOUT,
+            )
+            response.raise_for_status()
+            content = response.json().get("response", "{}")
+        else:
+            raise ValueError("LLM_PROVIDER must be 'groq' or 'ollama'.")
+
+        parsed = json.loads(content)
+        if isinstance(parsed, dict) and (parsed.get("category"), parsed.get("operation")) in OPS:
             return parsed
-    except (requests.RequestException, ValueError, KeyError, TypeError):
+    except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
         pass
     return quick
 
