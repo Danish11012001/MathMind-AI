@@ -1102,14 +1102,47 @@ def _split_tasks(text: str) -> list[str]:
     return [p for p in pieces if p]
 
 
+def _fix_display_math(text: str) -> str:
+    """Rewrite \\[...\\] and $$...$$ as proper block math.
+
+    remark-math only treats $$ as a block when the fences sit on their own
+    lines AND are indented to match the enclosing list item. Dropping the
+    indentation (or leaving $$ inline in a sentence) leaves the block unclosed,
+    which swallows the rest of the message as raw LaTeX.
+    """
+    pattern = re.compile(
+        r"^([ \t]*)([^\n$]*?)(?:\\\[|\$\$)(.*?)(?:\\\]|\$\$)",
+        re.S | re.M,
+        )
+
+    def repl(m: re.Match) -> str:
+        indent, before, body = m.group(1), m.group(2), m.group(3)
+        body = body.strip()
+        if not body:
+            return m.group(0)
+        marker = re.match(r"((?:[-*+]|\d+[.)])[ \t]+)", before)
+        if marker:  # inside a list item: continuation lines align with item text
+            indent = indent + " " * len(marker.group(1))
+        lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+        out = "\n"
+        if before.strip():
+            out += m.group(1) + before.rstrip() + "\n\n"
+        out += indent + "$$\n"
+        out += "".join(indent + ln + "\n" for ln in lines)
+        out += indent + "$$\n\n" + indent
+        return out
+
+    return pattern.sub(repl, text)
+
+
 def _normalize_math_markup(text: str) -> str:
     """Repair common malformed math/Markdown emitted by small local chat models."""
     if not text:
         return text
 
     # Convert common display/inline delimiters to remark-math's supported form.
-    text = re.sub(r"\\\[([\s\S]*?)\\\]", lambda m: "$$\n" + m.group(1).strip() + "\n$$", text)
-    text = re.sub(r"\\\((.*?)\\\)", lambda m: "$" + m.group(1).strip() + "$", text)
+    text = _fix_display_math(text)
+    text = re.sub(r"\\\(([^\n]*?)\\\)", lambda m: "$" + m.group(1).strip() + "$", text)
 
     # A ```math fence is not rendered by remark-math as display math.
     text = re.sub(
@@ -1117,6 +1150,8 @@ def _normalize_math_markup(text: str) -> str:
         lambda m: "$$\n" + m.group(1).strip() + "\n$$",
         text,
     )
+
+    text = re.sub(r"(?<=[.)\]])[ \t]+(#{2,4} [A-Z])", r"\n\n\1", text)
 
     # Undo common escaped-Markdown and Unicode-star artifacts.
     text = text.replace(r"\*\*", "**").replace("∗∗", "**")
@@ -1197,7 +1232,7 @@ def _normalize_math_markup(text: str) -> str:
         return "$" + body + "$"
 
     text = re.sub(r"\$\$(.*?)\$\$", lambda m: "$$" + clean_math_inline(m.group(1)) + "$$", text, flags=re.S)
-    text = re.sub(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", clean_math, text, flags=re.S)
+    text = re.sub(r"(?<!\$)\$(?!\$)([^\n]+?)(?<!\$)\$(?!\$)", clean_math, text)
     return text
 
 
@@ -1236,6 +1271,10 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
         "Formatting rules: use Markdown headings and lists; use $...$ for inline "
         "math and $$...$$ for display math. Do not use \\[...\\] or \\(...\\) "
         "delimiters, and never put equations inside plain square brackets. "
+        "Never put $$ display equations inside a numbered or bulleted list item; "
+        "keep list items short with inline $...$ math and put display equations "
+        "in their own paragraph with $$ on separate lines. "
+        "Always start headings on a new line. "
         "Write matrices with valid LaTeX, for example "
         "$$\\begin{bmatrix}a&b\\\\c&d\\end{bmatrix}$$. "
         "Do not output malformed LaTeX, escaped punctuation, or unfinished "

@@ -179,34 +179,19 @@ function App() {
         }
     }
 
+    // The backend already normalizes math delimiters. This is only a light
+    // safety net for \( \) / \[ \] that slip through; it must NOT split on
+    // "\\n" (that is a literal backslash-n, which also appears in \neq, \nu...).
     function normalizeMathMarkdown(content) {
-        let markdown = String(content || "");
-
-        // Convert common LaTeX delimiters to the delimiters recognized by remark-math.
-        markdown = markdown
-            .split("\\[").join("$$\n")
-            .split("\\]").join("\n$$")
-            .split("\\(").join("$")
-            .split("\\)").join("$");
-
-        // Some model responses emit display equations as bare LaTeX lines.
-        // Wrap those lines so KaTeX can render them instead of showing raw commands.
-        markdown = markdown
-            .split("\\n")
-            .map((line) => {
-                const trimmed = line.trim();
-                const startsWithLatex =
-                    /^\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|lim|begin|left|boxed|matrix|pmatrix|bmatrix)\b/.test(trimmed);
-
-                if (startsWithLatex && !trimmed.startsWith("$$") && !trimmed.startsWith("$")) {
-                    return `$$\\n${trimmed}\\n$$`;
-                }
-
-                return line;
-            })
-            .join("\\n");
-
-        return markdown;
+        return String(content || "")
+            .replace(/\\\(([^\n]*?)\\\)/g, (_, m) => `$${m.trim()}$`)
+            .replace(/^([ \t]*)\\\[([\s\S]*?)\\\]/gm, (_, indent, m) =>
+                `\n${indent}$$\n${m
+                    .trim()
+                    .split("\n")
+                    .map((l) => indent + l.trim())
+                    .join("\n")}\n${indent}$$\n`
+            );
     }
 
     function renderMessage(message) {
