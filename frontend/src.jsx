@@ -179,6 +179,36 @@ function App() {
         }
     }
 
+    function normalizeMathMarkdown(content) {
+        let markdown = String(content || "");
+
+        // Convert common LaTeX delimiters to the delimiters recognized by remark-math.
+        markdown = markdown
+            .split("\\[").join("$$\n")
+            .split("\\]").join("\n$$")
+            .split("\\(").join("$")
+            .split("\\)").join("$");
+
+        // Some model responses emit display equations as bare LaTeX lines.
+        // Wrap those lines so KaTeX can render them instead of showing raw commands.
+        markdown = markdown
+            .split("\\n")
+            .map((line) => {
+                const trimmed = line.trim();
+                const startsWithLatex =
+                    /^\\(?:frac|dfrac|tfrac|sqrt|sum|prod|int|lim|begin|left|boxed|matrix|pmatrix|bmatrix)\b/.test(trimmed);
+
+                if (startsWithLatex && !trimmed.startsWith("$$") && !trimmed.startsWith("$")) {
+                    return `$$\\n${trimmed}\\n$$`;
+                }
+
+                return line;
+            })
+            .join("\\n");
+
+        return markdown;
+    }
+
     function renderMessage(message) {
         if (message.role === "user") {
             return message.content;
@@ -186,7 +216,7 @@ function App() {
 
         return (
             <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-                {message.content || ""}
+                {normalizeMathMarkdown(message.content)}
             </ReactMarkdown>
         );
     }
