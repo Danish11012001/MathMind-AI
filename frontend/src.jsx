@@ -22,6 +22,31 @@ import "./style.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
+// Anonymous per-browser ID so each visitor only sees their own chats.
+function getClientId() {
+    try {
+        let id = localStorage.getItem("mathmind_client_id");
+        if (!id) {
+            id = crypto.randomUUID();
+            localStorage.setItem("mathmind_client_id", id);
+        }
+        return id;
+    } catch {
+        // Storage blocked (private mode): fall back to a per-tab ID.
+        window.__mathmindId = window.__mathmindId || crypto.randomUUID();
+        return window.__mathmindId;
+    }
+}
+
+const CLIENT_ID = getClientId();
+
+function apiFetch(path, options = {}) {
+    return fetch(`${API}${path}`, {
+        ...options,
+        headers: { ...(options.headers || {}), "X-Client-Id": CLIENT_ID },
+    });
+}
+
 function App() {
     const [chats, setChats] = useState([]);
     const [cid, setCid] = useState(null);
@@ -44,7 +69,7 @@ function App() {
 
     async function load() {
         try {
-            const response = await fetch(`${API}/api/conversations`);
+            const response = await apiFetch("/api/conversations");
 
             if (!response.ok) {
                 throw new Error("Could not load conversations.");
@@ -63,7 +88,7 @@ function App() {
 
     async function open(id) {
         try {
-            const response = await fetch(`${API}/api/conversations/${id}`);
+            const response = await apiFetch(`/api/conversations/${id}`);
 
             if (!response.ok) {
                 throw new Error("Could not open conversation.");
@@ -110,7 +135,7 @@ function App() {
         setErr("");
 
         try {
-            const response = await fetch(`${API}/api/chat`, {
+            const response = await apiFetch("/api/chat", {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
@@ -161,7 +186,7 @@ function App() {
         if (!confirm("Delete this conversation?")) return;
 
         try {
-            const response = await fetch(`${API}/api/conversations/${id}`, {
+            const response = await apiFetch(`/api/conversations/${id}`, {
                 method: "DELETE",
             });
 
