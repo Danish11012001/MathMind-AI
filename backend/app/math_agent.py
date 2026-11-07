@@ -22,6 +22,11 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
+try:  # normal case: imported as part of the app package
+    from . import reasoning_agent
+except ImportError:  # running the file directly / in tests
+    import reasoning_agent  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 X, Y, Z = sp.symbols("x y z")
@@ -1384,6 +1389,15 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
             if replayed.get("response"):
                 return replayed
 
+    # Multi-step (JEE-style) problems go to the tool-using reasoning agent.
+    # "/solve <problem>" forces it. Needs LLM_PROVIDER=groq and GROQ_API_KEY.
+    forced = clean_text.lower().startswith("/solve")
+    if forced:
+        clean_text = clean_text[6:].strip() or clean_text
+    if reasoning_agent.reasoning_available() and (
+            forced or reasoning_agent.is_hard_problem(clean_text, history)):
+        return reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+
     tasks = _split_tasks(clean_text)
 
     # Process compound prompts independently, preserving a combined API response.
@@ -1405,6 +1419,13 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
         planned = plan(clean_text, history)
         if (planned.get("category"), planned.get("operation")) in OPS:
             return execute(planned)
+
+        # A short problem the single-operation planner can't express (areas, loci,
+        # word problems...) also goes to the reasoning agent.
+        if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
+            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+            if deep.get("success"):
+                return deep
 
         # Unsupported/non-math turns and contextual follow-ups are handled conversationally.
         reply = _conversational_reply(clean_text, history)
