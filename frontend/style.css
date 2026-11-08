@@ -38,6 +38,8 @@
     --md-em: #3b4152;
     --md-quote: #4a5163;
     --shadow: #0002;
+    --scroll-thumb: #c3c7d4;
+    --scroll-thumb-hover: #a9aebe;
     --grad-a: #8b78ff;
     --grad-b: #5e5ce6;
 }
@@ -75,11 +77,42 @@
         --md-em: #c6c9d3;
         --md-quote: #b7bdca;
         --shadow: #0008;
+        --scroll-thumb: #3b3f4c;
+        --scroll-thumb-hover: #50556a;
     }
 }
 
 * {
     box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+@supports not (scrollbar-width: thin) {
+    ::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+        background: var(--scroll-thumb);
+        border-radius: 10px;
+        border: 3px solid transparent;
+        background-clip: content-box;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+        background: var(--scroll-thumb-hover);
+        background-clip: content-box;
+    }
+
+    ::-webkit-scrollbar-button {
+        display: none;
+    }
 }
 
 body {
@@ -121,9 +154,12 @@ button {
 /* ------------------------------------------------------------------ */
 
 .app {
+    position: relative;
+    width: 100%;
     height: 100vh;
     height: 100dvh;
     display: flex;
+    overflow: hidden;
 }
 
 aside {
@@ -314,11 +350,11 @@ header span {
 
 .feed {
     flex: 1;
+    min-height: 0;
     overflow: auto;
     width: 100%;
-    max-width: 850px;
-    margin: 0 auto;
-    padding: 30px 24px;
+    /* The scrollbar sits at the window edge; the content is centered in a 850px column. */
+    padding: 30px max(24px, calc((100% - 850px) / 2));
 }
 
 .welcome {
@@ -591,7 +627,7 @@ header span {
 .compose {
     width: min(850px, 100%);
     margin: 0 auto;
-    padding: 10px 24px 18px;
+    padding: 10px 24px max(18px, env(safe-area-inset-bottom));
     flex-shrink: 0;
 }
 
@@ -612,6 +648,7 @@ header span {
 
 .compose textarea {
     resize: none;
+    min-width: 0;
     min-height: 28px;
     max-height: 220px;
     overflow-y: auto;
@@ -727,6 +764,10 @@ header span {
     color: var(--error);
     font-size: 12px;
     margin: 0 0 8px;
+}
+
+.scrim {
+    display: none;
 }
 
 .menu {
@@ -901,9 +942,20 @@ header span {
 @media (max-width: 700px) {
     aside {
         position: absolute;
-        z-index: 5;
+        top: 0;
+        left: 0;
+        z-index: 6;
+        width: min(280px, 85vw);
         height: 100%;
         box-shadow: 10px 0 35px var(--shadow);
+    }
+
+    .scrim {
+        display: block;
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        background: #0007;
     }
 
     .feed {
@@ -911,7 +963,21 @@ header span {
     }
 
     .compose {
-        padding: 10px;
+        padding: 8px 10px max(10px, env(safe-area-inset-bottom));
+    }
+
+    .compose small {
+        display: none;
+    }
+
+    /* iOS zooms the whole page when a focused field is smaller than 16px. */
+    .compose textarea,
+    .field input {
+        font-size: 16px;
+    }
+
+    .user .bubble {
+        max-width: 88%;
     }
 
     .examples {

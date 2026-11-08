@@ -267,6 +267,9 @@ function renderMessage(message) {
 // Chat
 // ---------------------------------------------------------------------------
 
+const isMobile = () =>
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 700px)").matches;
+
 function ChatApp({ user, onSignOut }) {
     const [chats, setChats] = useState([]);
     const [cid, setCid] = useState(null);
@@ -274,7 +277,8 @@ function ChatApp({ user, onSignOut }) {
     const [text, setText] = useState("");
     const [busy, setBusy] = useState(false);
     const [err, setErr] = useState("");
-    const [side, setSide] = useState(true);
+    // On phones the sidebar is an overlay, so start with it closed.
+    const [side, setSide] = useState(() => !isMobile());
     const [files, setFiles] = useState([]);
     const [hint, setHint] = useState("");
     const [dragging, setDragging] = useState(false);
@@ -333,6 +337,7 @@ function ChatApp({ user, onSignOut }) {
             const data = await response.json();
 
             setCid(id);
+            if (isMobile()) setSide(false);
             setMsgs(
                 data.messages.map((message) => ({
                     role: message.role,
@@ -348,6 +353,7 @@ function ChatApp({ user, onSignOut }) {
     }
 
     function fresh() {
+        if (isMobile()) setSide(false);
         setCid(null);
         setMsgs([]);
         setText("");
@@ -547,6 +553,8 @@ function ChatApp({ user, onSignOut }) {
 
     return (
         <div className="app">
+            {side && <div className="scrim" onClick={() => setSide(false)} />}
+
             {side && (
                 <aside>
                     <div className="brand">
