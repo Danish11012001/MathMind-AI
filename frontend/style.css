@@ -578,19 +578,6 @@ header span {
     line-height: normal !important;
 }
 
-.markdown-content .katex .mfrac {
-    margin: 0 0.08em;
-    line-height: normal !important;
-}
-
-.markdown-content .katex .msupsub {
-    line-height: normal !important;
-}
-
-.markdown-content .katex .mfrac .frac-line {
-    min-height: 0.04em;
-}
-
 .markdown-content li .katex,
 .markdown-content p .katex {
     display: inline;

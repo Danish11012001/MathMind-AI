@@ -174,24 +174,25 @@ function AuthScreen({ onAuth, notice }) {
 function normalizeMathMarkdown(content) {
     let text = String(content || "");
 
-    // 1. Fix inline math: remove any newlines inside $ ... $
-    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)/g, (match, inner) => {
-        return `$${inner.replace(/\n/g, ' ').trim()}$`;
-    });
-
-    // 2. Convert \[ ... \] to $$ ... $$ safely on their own lines
+    // 1. Convert \[ ... \] to $$ ... $$
     text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {
         return `\n$$\n${inner.trim()}\n$$\n`;
     });
 
-    // 3. Convert \( ... \) to $ ... $ safely
+    // 2. Convert \( ... \) to $ ... $
     text = text.replace(/\\\(([\s\S]*?)\\\)/g, (match, inner) => {
+        return `$${inner.replace(/\n/g, ' ').trim()}$`;
+    });
+
+    // 3. Clean up stray newlines inside inline math $ ... $
+    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)/g, (match, inner) => {
+        // Only replace newlines if it's not a complex aligned block
+        if (inner.includes("\\begin")) return match;
         return `$${inner.replace(/\n/g, ' ').trim()}$`;
     });
 
     return text;
 }
-
 function renderMessage(message) {
     if (message.role === "user") return message.content;
     return (
