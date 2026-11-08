@@ -41,7 +41,8 @@ Image.MAX_IMAGE_PIXELS = 40_000_000  # decompression-bomb guard (errors above 2x
 _PROMPT = (
     "You are an OCR engine for mathematics. Transcribe ALL text and mathematics in this image exactly as "
     "written, including handwriting.\n"
-    "- Write mathematics in LaTeX: $...$ inline and $$...$$ for display equations.\n"
+    "- Write mathematics in plain, readable text format that a student can easily read (e.g., x^2, sqrt(x), pi, integral from 0 to x, fraction 1/2).\n"
+    "- Do NOT use LaTeX commands (like \\frac, \\int, \\sqrt) or dollar signs. Just write the math naturally.\n"
     "- Keep question numbers and multiple-choice options such as (A), (B), (C), (D) on separate lines.\n"
     "- Put a brief description of any diagram or figure in [square brackets].\n"
     "- Write [illegible] for anything you cannot read; never guess missing parts.\n"

@@ -480,6 +480,14 @@ function ChatApp({ user, onSignOut }) {
                 <div className={`compose ${dragging ? "dragging" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}>
                     {err && <p className="error">{err}</p>}
                     {hint && <p className="hint">{hint}</p>}
+                    {text.trim().length > 0 && (text.includes("$") || text.includes("\\") || text.includes("^") || text.includes("sqrt")) && (
+                        <div className="math-preview">
+                            <small>Math Preview:</small>
+                            <div className="markdown-content">
+                                {renderMessage({ role: "assistant", content: text })}
+                            </div>
+                        </div>
+                    )}
                     {files.length > 0 && (
                         <div className="chips">
                             {files.map((file) => (
