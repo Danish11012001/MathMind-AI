@@ -1700,6 +1700,7 @@ def _gemini_explain_deep(question: str, packed: dict) -> dict:
         "Do not write or alter the final answer or verification statement; those are appended separately. "
         "Use valid Markdown and readable LaTeX."
     )
+    logger.info("MathMind explanation: GEMINI")
     explanation = gemini_client.generate_text(
         prompt,
         "You are MathMind's explanation writer. Explain supplied verified work; never change its mathematical conclusions.",

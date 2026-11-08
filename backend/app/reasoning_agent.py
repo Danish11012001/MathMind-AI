@@ -385,6 +385,7 @@ def _chat(messages: list[dict], model: str, temperature: float) -> dict:
         payload["reasoning_effort"] = REASONING_EFFORT
     headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}", "Content-Type": "application/json"}
     for attempt in range(2):
+        logger.info("MathMind advanced solver: GROQ | Model: %s", model)
         response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(5, 70))
         if response.status_code == 400 and "reasoning_effort" in payload and attempt == 0:
             payload.pop("reasoning_effort")
@@ -511,6 +512,8 @@ def verify_solution(question: str, claimed: str, deadline: float | None = None) 
     # Gemini reviews the GPT-OSS solution and its SymPy tool trace. It does not
     # replace SymPy; it audits the supplied calculations and answer.
     if gemini_client is not None and gemini_client.available():
+        logger.info("MathMind verification: GEMINI")
+
         remaining = max(5, min(35, deadline - time.monotonic()))
         review = gemini_client.generate_text(
             user + "\n\nReturn ONLY JSON with keys verdict, evidence, corrected_answer. "
