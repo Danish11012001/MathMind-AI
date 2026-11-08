@@ -241,7 +241,7 @@ def chat(p: Chat, user: dict = Depends(current_user)):
  save(cid, "user", text)
 
  with connect() as c:
-  rows = c.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 12",
+  rows = c.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 6",
                    (cid,)).fetchall()
   hist = [dict(r) for r in rows][1:]
   hist.reverse()

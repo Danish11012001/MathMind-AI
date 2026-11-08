@@ -1535,7 +1535,7 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
                         {"role":"user", "content":prompt},
                     ],
                     "temperature":0.2,
-                    "max_tokens":3500,
+                    "max_tokens":8192,
                 },
                 timeout=(5, 90),
             )
