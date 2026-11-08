@@ -1476,6 +1476,18 @@ def _normalize_math_markup(text: str) -> str:
         return "$" + body + "$"
     text = re.sub(r"\$\$(.*?)\$\$", lambda m: "$$" + clean_math_inline(m.group(1)) + "$$", text, flags=re.S)
     text = re.sub(r"(?<!\$)\$(?!\$)([^\n]+?)(?<!\$)\$(?!\$)", clean_math, text)
+    # Fix inline math with literal newlines (KaTeX breaks on these)
+    def fix_inline_math(match):
+        body = match.group(1)
+        return "$" + body.replace("\n", " ").strip() + "$"
+
+    text = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
+    # Fix inline math with literal newlines (KaTeX breaks on these)
+    def fix_inline_math(match):
+        body = match.group(1)
+        return "$" + body.replace("\n", " ").strip() + "$"
+
+    text = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
     return text
 
 def clean_math_inline(body: str) -> str:

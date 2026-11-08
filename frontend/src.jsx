@@ -172,11 +172,24 @@ function AuthScreen({ onAuth, notice }) {
 }
 
 function normalizeMathMarkdown(content) {
-    return String(content || "")
-        .replace(/\\\(([^\n]*?)\\\)/g, (_, m) => `$${m.trim()}$`)
-        .replace(/^([ \t]*)\\\[([\s\S]*?)\\\]/gm, (_, indent, m) =>
-            `\n${indent}$$\n${m.trim().split("\n").map((l) => indent + l.trim()).join("\n")}\n${indent}$$\n`
-        );
+    let text = String(content || "");
+
+    // 1. Fix inline math: remove any newlines inside $ ... $
+    text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)/g, (match, inner) => {
+        return `$${inner.replace(/\n/g, ' ').trim()}$`;
+    });
+
+    // 2. Convert \[ ... \] to $$ ... $$ safely on their own lines
+    text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {
+        return `\n$$\n${inner.trim()}\n$$\n`;
+    });
+
+    // 3. Convert \( ... \) to $ ... $ safely
+    text = text.replace(/\\\(([\s\S]*?)\\\)/g, (match, inner) => {
+        return `$${inner.replace(/\n/g, ' ').trim()}$`;
+    });
+
+    return text;
 }
 
 function renderMessage(message) {

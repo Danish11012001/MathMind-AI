@@ -358,6 +358,7 @@ Final response format (Markdown):
 - Never put $$ display equations inside list items; keep list items short and put display equations in their own paragraph.
 - Start headings on a new line.
 - The LAST line must be exactly: FINAL_ANSWER: <the answer only, e.g. 3/4, (B), or x = 2 or x = 3>
+- IMPORTANT: Do not use line breaks inside math equations. Keep all equations on a single line unless you are using a \begin{aligned} environment.
 Be honest: if you could not verify something or the problem is ambiguous, say so instead of guessing."""
 
 
