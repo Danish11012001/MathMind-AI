@@ -11,6 +11,14 @@ from typing import Any, Callable
 
 import requests
 import sympy as sp
+
+try:
+    from . import gemini_client
+except ImportError:
+    try:
+        import gemini_client  # type: ignore
+    except ImportError:
+        gemini_client = None  # type: ignore
 from sympy.parsing.sympy_parser import (
     convert_xor,
     implicit_multiplication_application,
@@ -498,7 +506,35 @@ def _parse_json(text: str) -> dict:
 
 def verify_solution(question: str, claimed: str, deadline: float | None = None) -> dict:
     deadline = deadline or time.monotonic() + 60
-    user = f"PROBLEM:\n{question}\n\nCLAIMED ANSWER:\n{claimed}"
+    user = f"PROBLEM:\n{question}\n\nCLAIMED ANSWER AND SOLVER TRACE:\n{claimed}"
+
+    # Gemini reviews the GPT-OSS solution and its SymPy tool trace. It does not
+    # replace SymPy; it audits the supplied calculations and answer.
+    if gemini_client is not None and gemini_client.available():
+        remaining = max(5, min(35, deadline - time.monotonic()))
+        review = gemini_client.generate_text(
+            user + "\n\nReturn ONLY JSON with keys verdict, evidence, corrected_answer. "
+                   "verdict must be correct, incorrect, or inconclusive. Check whether the reasoning "
+                   "matches the supplied SymPy computations, whether the answer follows, and whether "
+                   "cases/domain restrictions are missing. Never claim to have executed tools. "
+                   "Use inconclusive if the trace is insufficient.",
+            "You are a skeptical mathematical reviewer. Do not trust the claimed answer. "
+            "The provided trace contains calculations made by a separate SymPy tool runner.",
+            temperature=0, max_output_tokens=700, timeout=(5, int(remaining)),
+            )
+        if review:
+            data = _parse_json(review)
+            verdict = str(data.get("verdict", "")).strip().lower()
+            if verdict not in {"correct", "incorrect", "inconclusive"}:
+                verdict = "inconclusive"
+            return {
+                "verdict": verdict,
+                "evidence": str(data.get("evidence", "Gemini reviewed the supplied solution and SymPy trace.")).strip()[:400],
+                "corrected": str(data.get("corrected_answer", "") or "").strip()[:200],
+                "tool_calls": 0, "source": "gemini",
+            }
+
+    # Fallback to the original tool-using Groq verifier if Gemini is unavailable.
     try:
         run = _agent_loop(VERIFIER_PROMPT, user, 0.0, deadline, 6)
     except AgentError as error:
@@ -596,7 +632,13 @@ def solve_hard(question: str, history: list[dict] | None = None,
         if on_event:
             on_event("status", "Independently verifying the answer...")
 
-        verdict = verify_solution(question, chosen["answer"] or chosen["body"][-1200:], deadline)
+        claimed_for_verification = (
+                f"Claimed answer: {chosen['answer'] or 'not explicitly separated'}\n\n"
+                f"Solver reasoning: {chosen['body'][-5000:]}\n\n"
+                "SymPy tool trace (actual computations performed by the solver):\n"
+                + "\n".join(chosen.get("trace", [])[-16:])
+        )
+        verdict = verify_solution(question, claimed_for_verification[:9000], deadline)
         if verdict["verdict"] != "incorrect":
             break
         feedback = verdict["evidence"] + (f" The verifier suggests: {verdict['corrected']}." if verdict["corrected"] else "")
@@ -610,7 +652,11 @@ def solve_hard(question: str, history: list[dict] | None = None,
     evidence = (verdict or {}).get("evidence", "")
     if state == "correct":
         verification = True
-        note = "Verification: PASSED (independently checked with SymPy)" + (f"\n\n*Check:* {evidence}" if evidence else "")
+        if (verdict or {}).get("source") == "gemini":
+            note = "Verification: PASSED (Gemini reviewed the solution and SymPy computation trace)"
+        else:
+            note = "Verification: PASSED (independently checked with SymPy)"
+        note += (f"\n\n*Check:* {evidence}" if evidence else "")
     elif state == "incorrect":
         verification = False
         note = f"⚠️ Verification FAILED: {evidence} This answer is probably wrong, so do not rely on it."

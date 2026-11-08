@@ -26,6 +26,14 @@ try:
 except ImportError:
     import reasoning_agent  # type: ignore
 
+try:
+    from . import gemini_client
+except ImportError:
+    try:
+        import gemini_client  # type: ignore
+    except ImportError:
+        gemini_client = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 X, Y, Z = sp.symbols("x y z")
@@ -465,6 +473,18 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
     )
     prompt = f"{schema}\nRecent context: {context}\nUser request: {text}"
     try:
+        if gemini_client is not None and gemini_client.available():
+            content = gemini_client.generate_text(
+                prompt,
+                "You are MathMind's mathematical task planner. Classify the request only; "
+                "do not solve it. Return one valid JSON object and use only supported operations.",
+                temperature=0, max_output_tokens=500, timeout=(5, 25),
+            )
+            if content:
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and (parsed.get("category"), parsed.get("operation")) in OPS:
+                    return parsed
+
         if LLM_PROVIDER == "groq":
             if not GROQ_API_KEY:
                 raise RuntimeError("GROQ_API_KEY is not configured")
@@ -1534,6 +1554,16 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
         "Write the complete response now."
     )
     try:
+        if gemini_client is not None and gemini_client.available():
+            answer = gemini_client.generate_text(
+                prompt,
+                "You are MathMind, a friendly mathematical assistant. Follow the user's request completely. "
+                "Use conversation context carefully and never invent calculation results.",
+                temperature=0.2, max_output_tokens=8192, timeout=(5, 90),
+            )
+            if answer:
+                return _normalize_math_markup(answer)
+
         if LLM_PROVIDER == "groq":
             if not GROQ_API_KEY:
                 raise RuntimeError("GROQ_API_KEY is not configured")
@@ -1609,6 +1639,80 @@ def _last_user_request(history: list[dict], current_text: str = "") -> str | Non
     return None
 
 
+def _gemini_explain_packed(question: str, packed: dict) -> dict:
+    """Improve explanation wording while keeping the computed result and verification untouched."""
+    if (gemini_client is None or not gemini_client.available() or not packed.get("success")
+            or packed.get("verification") is False or not packed.get("operation")
+            or packed.get("result") is None):
+        return packed
+
+    response = str(packed.get("response", ""))
+    verification_match = re.search(r"\n\n\*\*Verification:\*\*.*$", response, re.S)
+    verification_text = verification_match.group(0) if verification_match else ""
+    body = response[:verification_match.start()] if verification_match else response
+    # Keep the title and exact result line generated from SymPy. Gemini only writes explanation steps.
+    step_match = re.search(r"\n\n(?=1\. )", body)
+    fixed_header = body[:step_match.start()] if step_match else body
+    original_steps = packed.get("steps", [])
+    prompt = (
+        "Explain the already-computed mathematical result to an undergraduate student.\n"
+        f"Question: {question}\nOperation: {packed.get('operation')}\n"
+        f"Exact result from SymPy (DO NOT alter or repeat it): {packed.get('result')}\n"
+        f"Existing calculation notes: {json.dumps(original_steps, ensure_ascii=False)}\n\n"
+        "Write clear numbered reasoning steps only. Do not include a final answer, result line, "
+        "verification claim, or any new numerical calculation. Do not change the given result. "
+        "Use valid Markdown and readable math."
+    )
+    explanation = gemini_client.generate_text(
+        prompt,
+        "You are MathMind's explanation writer. SymPy owns the calculation; you explain the supplied steps only.",
+        temperature=0.2, max_output_tokens=2500, timeout=(5, 60),
+    )
+    if not explanation:
+        return packed
+    explanation = _normalize_math_markup(explanation.strip())
+    # Refuse malformed/empty output; original deterministic explanation remains the fallback.
+    if len(explanation) < 20:
+        return packed
+    packed = dict(packed)
+    packed["response"] = fixed_header + "\n\n" + explanation + verification_text
+    packed["explanation_provider"] = "gemini"
+    return packed
+
+
+def _gemini_explain_deep(question: str, packed: dict) -> dict:
+    """Rewrite hard-solver reasoning without changing its answer or verification footer."""
+    if (gemini_client is None or not gemini_client.available() or not packed.get("success")
+            or packed.get("verification") is False):
+        return packed
+    response = str(packed.get("response", ""))
+    final_match = re.search(r"\n\n\*\*Final answer:\*\*.*$", response, re.S)
+    if final_match:
+        explanation_source = response[:final_match.start()]
+        locked_tail = response[final_match.start():]
+    else:
+        explanation_source, locked_tail = response, ""
+    prompt = (
+        f"Problem: {question}\n\nVerified solver reasoning:\n{explanation_source[-7000:]}\n\n"
+        f"SymPy tool trace: {json.dumps(packed.get('steps', [])[-16:], ensure_ascii=False)[:5000]}\n\n"
+        "Rewrite the reasoning as a clear, student-friendly, complete step-by-step explanation. "
+        "Use only facts and computations in the supplied trace. Do not invent calculations. "
+        "Do not write or alter the final answer or verification statement; those are appended separately. "
+        "Use valid Markdown and readable LaTeX."
+    )
+    explanation = gemini_client.generate_text(
+        prompt,
+        "You are MathMind's explanation writer. Explain supplied verified work; never change its mathematical conclusions.",
+        temperature=0.2, max_output_tokens=5000, timeout=(5, 75),
+    )
+    if not explanation or len(explanation.strip()) < 40:
+        return packed
+    packed = dict(packed)
+    packed["response"] = _normalize_math_markup(explanation.strip()) + locked_tail
+    packed["explanation_provider"] = "gemini"
+    return packed
+
+
 def answer_math(text: str, history: list[dict] | None = None, on_event: Callable[[str, str], None] | None = None) -> dict:
     if not isinstance(text, str) or not text.strip():
         return {
@@ -1632,7 +1736,8 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
 
     if reasoning_agent.reasoning_available() and (
             forced or reasoning_agent.is_hard_problem(clean_text, history)):
-        return reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
+        deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
+        return _gemini_explain_deep(clean_text, deep)
 
     tasks = _split_tasks(clean_text)
 
@@ -1653,12 +1758,13 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
     try:
         planned = plan(clean_text, history)
         if (planned.get("category"), planned.get("operation")) in OPS:
-            return _llm_verify_fastpath(clean_text, execute(planned))
+            packed = _llm_verify_fastpath(clean_text, execute(planned))
+            return _gemini_explain_packed(clean_text, packed)
 
         if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
             deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
             if deep.get("success"):
-                return deep
+                return _gemini_explain_deep(clean_text, deep)
 
         if on_event: on_event("status", "Generating conversational reply...")
         reply = _conversational_reply(clean_text, history)
@@ -1671,7 +1777,7 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
         if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
             deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
             if deep.get("success"):
-                return deep
+                return _gemini_explain_deep(clean_text, deep)
         return {
             "success": False, "operation": None, "result": None, "steps": [],
             "verification": None, "response": f"I couldn't process that request: {error}",
