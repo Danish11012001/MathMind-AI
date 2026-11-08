@@ -1,9 +1,3 @@
-"""MathMind mathematical planner and SymPy execution engine.
-
-Responses include LaTeX math delimiters ($...$ / $$...$$). The frontend
-must render Markdown math with KaTeX or MathJax for textbook-style display.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -15,7 +9,7 @@ import re
 import statistics as _stats
 import threading
 from fractions import Fraction
-from typing import Any
+from typing import Any, Callable
 
 import mpmath
 import requests
@@ -27,9 +21,9 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
-try:  # normal case: imported as part of the app package
+try:
     from . import reasoning_agent
-except ImportError:  # running the file directly / in tests
+except ImportError:
     import reasoning_agent  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -64,40 +58,30 @@ OPS = {
     ("statistics", "standard_deviation"),
     ("number_theory", "gcd"), ("number_theory", "lcm"),
     ("number_theory", "prime_factors"),
-    # Equations and inequalities
     ("equation", "solve_system"), ("equation", "inequality"),
-    # Algebra and polynomials
     ("algebra", "apart"), ("algebra", "polynomial_division"),
     ("algebra", "polynomial_gcd"),
-    # Calculus and differential equations
     ("calculus", "higher_derivative"), ("calculus", "series"),
     ("calculus", "numerical_integral"), ("calculus", "ode"),
     ("calculus", "laplace"), ("calculus", "inverse_laplace"),
     ("calculus", "fourier_transform"),
-    # Linear algebra
     ("matrix", "solve_system"), ("matrix", "eigenvectors"),
     ("matrix", "nullspace"), ("matrix", "rref"),
     ("matrix", "diagonalize"), ("matrix", "lu_decomposition"),
-    # Discrete mathematics
     ("discrete", "summation"), ("discrete", "product"),
     ("discrete", "sequence"), ("discrete", "recurrence"),
-    # Number theory
     ("number_theory", "is_prime"), ("number_theory", "divisors"),
     ("number_theory", "modular"),
-    # Probability and combinatorics
     ("probability", "expected_value"), ("probability", "probability"),
     ("probability", "covariance"), ("probability", "correlation"),
     ("combinatorics", "permutations"), ("combinatorics", "combinations"),
     ("combinatorics", "factorial"), ("combinatorics", "binomial"),
-    # Vectors, geometry, and optimization
     ("vector", "dot"), ("vector", "cross"), ("vector", "magnitude"),
     ("vector", "angle"), ("geometry", "distance"),
     ("geometry", "midpoint"), ("optimization", "optimize"),
 }
 
-
 def expr(value: Any) -> sp.Expr:
-    """Parse expressions with implicit multiplication and common math notation."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Please provide a mathematical expression.")
 
@@ -126,7 +110,6 @@ def expr(value: Any) -> sp.Expr:
         "abs": sp.Abs,
     })
 
-    # Reject unknown words instead of silently treating typos as symbols.
     allowed_names = set(local_symbols)
     identifiers = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value))
     unknown = identifiers - allowed_names
@@ -173,7 +156,6 @@ def matrices(text: str) -> list[list[list[float]]]:
 
 
 def vectors(text: str) -> list[list[int | float]]:
-    """Extract simple numeric vectors written as [1, 2, 3]."""
     found = []
     pattern = r"\[(?:\s*[-+]?\d+(?:\.\d+)?\s*,?)+\]"
     for match in re.finditer(pattern, text):
@@ -216,7 +198,6 @@ def fallback(text: str) -> dict:
     ms = matrices(s)
     vecs = vectors(s)
 
-    # ODEs with an initial condition: keep the ODE and condition separate.
     ode_match = re.search(
         r"(?is)(?:solve\s+)?d\s*y\s*/\s*d\s*x\s*=\s*(.+?)"
         r"(?:[,;]\s*|\s+(?:with\s+)?)y\s*\(\s*([^)]*)\s*\)\s*=\s*([^,;?]+)\s*$",
@@ -230,7 +211,6 @@ def fallback(text: str) -> dict:
             "ics": {"x0": x0, "y0": y0},
         }
 
-    # Binomial probability in natural language.
     prob_match = re.search(
         r"(?is)exactly\s+(\d+)\s+heads.*?in\s+(\d+)\s+(?:fair\s+)?(?:coin\s+)?(?:toss(?:es)?|flip(?:s)?)",
         s,
@@ -240,7 +220,6 @@ def fallback(text: str) -> dict:
         return {"category": "probability", "operation": "probability",
                 "successes": k, "trials": n, "p": "1/2"}
 
-    # Selection/combination phrasing.
     comb_match = re.search(
         r"(?is)how many ways can\s+(\d+)\s+(?:people|persons|items|objects)\s+be selected from (?:a group of )?(\d+)",
         s,
@@ -253,7 +232,6 @@ def fallback(text: str) -> dict:
         r, n = map(int, comb_match.groups())
         return {"category": "combinatorics", "operation": "combinations", "n": n, "r": r}
 
-    # Vector operations, using flat bracketed arrays (not matrix parsing).
     if len(vecs) >= 2 and "dot product" in low:
         return {"category": "vector", "operation": "dot",
                 "vector_a": vecs[0], "vector_b": vecs[1],
@@ -262,7 +240,6 @@ def fallback(text: str) -> dict:
         return {"category": "vector", "operation": "cross",
                 "vector_a": vecs[0], "vector_b": vecs[1]}
 
-    # Critical points / local extrema.
     if "critical point" in low:
         fmatch = re.search(
             r"(?is)f\s*\(\s*x\s*\)\s*=\s*(.+?)(?:\s+and\s+classify(?:\s+them)?|[?!.]?$)",
@@ -272,7 +249,6 @@ def fallback(text: str) -> dict:
             return {"category": "optimization", "operation": "optimize",
                     "expression": fmatch.group(1).strip(), "variable": "x", "classify": True}
 
-    # Partial-fraction decomposition.
     if "partial fraction" in low:
         raw = _strip_leading(s, [
             r"find the partial fraction decomposition of",
@@ -283,7 +259,6 @@ def fallback(text: str) -> dict:
         return {"category": "algebra", "operation": "apart",
                 "expression": raw, "variable": "x"}
 
-    # Taylor/Maclaurin expansion.
     if "taylor" in low or "maclaurin" in low:
         fmatch = re.search(r"(?is)(?:series of|expand)\s+(.+?)\s+(?:around|at)\s+([xyzt])\s*=\s*([-+]?\d+(?:\.\d+)?)", s)
         order_match = re.search(r"(?i)(?:up to order|through order|order)\s+(\d+)", s)
@@ -428,8 +403,6 @@ def fallback(text: str) -> dict:
         ).strip()
         return {"category": "equation", "operation": "solve", "expression": raw}
 
-    # Extended deterministic routing for common requests; the LLM planner handles
-    # more complex wording and fills the structured arguments.
     if "is prime" in low or "prime number" in low:
         if nums:
             return {"category":"number_theory","operation":"is_prime","value":int(nums[-1])}
@@ -455,7 +428,6 @@ def fallback(text: str) -> dict:
 
 
 def plan(text: str, history: list[dict] | None = None) -> dict:
-    """Plan a request with a hosted Groq model or local Ollama, then validate."""
     quick = fallback(text)
     if (quick.get("category"), quick.get("operation")) in OPS:
         return quick
@@ -536,7 +508,6 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
 
 
 def display_math(value: Any) -> str:
-    """Compact Unicode representation for the JSON result field."""
     if isinstance(value, sp.Float):
         if value.is_finite and value == int(value):
             return str(int(value))
@@ -561,7 +532,6 @@ def display_math(value: Any) -> str:
 
 
 def latex_math(value: Any) -> str:
-    """Return LaTeX for frontend math rendering (KaTeX/MathJax)."""
     if isinstance(value, str):
         return r"\text{" + value.replace("_", r"\_") + "}"
     try:
@@ -594,18 +564,6 @@ def pack(operation: str, result: Any, steps: list[str],
 
 def _step(text: str) -> str:
     return text
-
-
-# --------------------------------------------------------------------------- #
-# Independent verification of every fast-path result
-#
-# Several operations used to report "PASSED" from checks that cannot fail
-# (verified=True, or comparing a result with itself). execute() now overrides
-# those with a real recomputation by a different route (python's math /
-# statistics / fractions modules, numeric evaluation, or sampling). Operations
-# with no cheap independent check are verified by the SymPy-backed verifier
-# agent in answer_math(), or honestly labelled NOT CHECKED.
-# --------------------------------------------------------------------------- #
 
 _LOCAL = threading.local()
 _KEEP = object()  # sentinel: this operation's own check is genuine, keep it
@@ -755,7 +713,6 @@ def _ck_matrix(p, raw):
         n = a.rows
         return sum(raw.values()) == n and all(_tiny((a - l * sp.eye(n)).det()) for l in raw)
     rr = raw[0] if isinstance(raw, tuple) else raw  # rref
-    # RREF is unique: rr must be in reduced form AND span the same row space as a.
     return (rr.shape == a.shape and rr.rref()[0] == rr
             and rr.rank() == a.rank() == sp.Matrix.vstack(a, rr).rank())
 
@@ -767,7 +724,7 @@ def _ck_limit(p, raw):
         xs = [sp.Integer(10) ** 6, sp.Integer(10) ** 9]
     elif pt == -sp.oo:
         xs = [-sp.Integer(10) ** 6, -sp.Integer(10) ** 9]
-    else:  # sympy's default limit is the right-hand limit
+    else:
         xs = [pt + sp.Rational(1, 10**6), pt + sp.Rational(1, 10**9)]
     vals = [complex(sp.N(f.subs(var, x), 30)) for x in xs]
     if raw.is_finite:
@@ -807,7 +764,6 @@ def _ck_series(p, raw):
         e1, e2 = abs(f(x0 + h1) - g(x0 + h1)), abs(f(x0 + h2) - g(x0 + h2))
         if e2 < mpmath.mpf("1e-30"):
             return True
-        # a correct truncation error shrinks like h^(order+1); a wrong series does not
         r1, r2 = e1 / h1 ** order, e2 / h2 ** order
         return bool(r2 < max(mpmath.mpf("1e-9"), r1 / 2))
 
@@ -866,7 +822,6 @@ _INDEP: dict[tuple[str, str], Any] = {
     ("discrete", "summation"): _ck_sum_product, ("discrete", "product"): _ck_sum_product,
     ("discrete", "sequence"): _ck_sequence, ("equation", "inequality"): _ck_inequality,
 }
-# Operations whose built-in check is hollow and that have no cheap independent check.
 _HOLLOW = {("calculus", "laplace"), ("calculus", "inverse_laplace"), ("calculus", "fourier_transform"),
            ("calculus", "numerical_integral"), ("discrete", "recurrence")}
 
@@ -886,13 +841,13 @@ def _apply_independent_check(p: dict, packed: dict) -> dict:
     key = (p.get("category"), p.get("operation"))
     check = _INDEP.get(key)
     if check is None and key not in _HOLLOW:
-        return packed  # this operation's own verification is genuine
+        return packed
     outcome = None
     raw = getattr(_LOCAL, "raw", None)
     if check is not None and raw is not None:
         try:
             outcome = check(p, raw)
-        except Exception:  # noqa: BLE001 - an undecidable check means "not checked"
+        except Exception:
             logger.debug("independent check failed for %s", key, exc_info=True)
     if outcome is _KEEP:
         return packed
@@ -900,7 +855,6 @@ def _apply_independent_check(p: dict, packed: dict) -> dict:
 
 
 def execute(p: dict) -> dict:
-    """Run a planned operation, then independently verify the result."""
     _LOCAL.raw = None
     packed = _execute_raw(p)
     if isinstance(packed, dict) and packed.get("operation") and "verification" in packed:
@@ -909,7 +863,6 @@ def execute(p: dict) -> dict:
 
 
 def _llm_verify_fastpath(question: str, packed: dict) -> dict:
-    """Verify results that have no cheap independent check with the SymPy-backed verifier."""
     if (packed.get("verification") is not None or not packed.get("operation")
             or not reasoning_agent.reasoning_available() or not reasoning_agent.VERIFY_ENABLED):
         return packed
@@ -923,9 +876,7 @@ def _llm_verify_fastpath(question: str, packed: dict) -> dict:
     return packed
 
 
-
 def _execute_raw(p: dict) -> dict:
-    """Execute a planned operation and return operation-specific teaching steps."""
     category, operation = p.get("category"), p.get("operation")
     if (category, operation) not in OPS:
         return {
@@ -935,8 +886,6 @@ def _execute_raw(p: dict) -> dict:
                         "Please rephrase your mathematical question and include the required expression or values.",
         }
 
-    # Extended SymPy operations. Each branch computes independently and then
-    # verifies the result where a symbolic identity/check is available.
     if category == "equation" and operation == "solve_system":
         equations = p.get("equations") or p.get("expressions")
         if isinstance(equations, str): equations = [x.strip() for x in equations.split(";") if x.strip()]
@@ -992,7 +941,6 @@ def _execute_raw(p: dict) -> dict:
     if category == "calculus" and operation == "series":
         e=expr(p.get("expression","")); var=sp.Symbol(str(p.get("variable","x"))); point=expr(str(p.get("point",0))); order=int(p.get("order",6))
         if order<1 or order>30: raise ValueError("Series order must be between 1 and 30.")
-        # User-facing "up to order N" means include the degree-N term.
         result=sp.series(e,var,point,order+1)
         return pack("Taylor series",result,[f"Expand {inline_math(e)} around {var}={point}.",f"Keep terms through order {order}.",f"Series: {inline_math(result)}."],True)
     if category == "calculus" and operation == "numerical_integral":
@@ -1403,23 +1351,16 @@ def _execute_raw(p: dict) -> dict:
         return pack(operation.upper() if operation in ("gcd","lcm") else "Prime factorization",
                     result,steps,True)
 
-
-
-
 def _split_tasks(text: str) -> list[str]:
-    """Split compound prompts into independent questions without splitting expressions."""
     raw = text.strip()
     if not raw:
         return []
-
-    # First split on explicit list/bullet/newline separators and question marks.
     chunks = re.split(r"(?:\n+|\s*[;]\s*|\s*\?\s*)", raw)
     pieces: list[str] = []
     for chunk in chunks:
         chunk = re.sub(r"^\s*(?:(?:\d+\s*[.)])|[-*•])\s*", "", chunk).strip(" \t\r\n.?!")
         if not chunk:
             continue
-        # Handle concatenated requests such as "... divisors Find the eigenvalues ...".
         starts = list(re.finditer(
             r"(?i)(?<!^)(?<![.!?])\s+(?=(?:find|solve|calculate|compute|evaluate|determine|what is|what are|how many|differentiate|integrate|factor|simplify|expand|classify|give me)\b)",
             chunk,
@@ -1437,31 +1378,20 @@ def _split_tasks(text: str) -> list[str]:
                 pieces.append(tail)
         else:
             pieces.append(chunk)
-
-    # A single ordinary sentence/question stays one task.
     return [p for p in pieces if p]
 
-
 def _fix_display_math(text: str) -> str:
-    """Rewrite \\[...\\] and $$...$$ as proper block math.
-
-    remark-math only treats $$ as a block when the fences sit on their own
-    lines AND are indented to match the enclosing list item. Dropping the
-    indentation (or leaving $$ inline in a sentence) leaves the block unclosed,
-    which swallows the rest of the message as raw LaTeX.
-    """
     pattern = re.compile(
         r"^([ \t]*)([^\n$]*?)(?:\\\[|\$\$)(.*?)(?:\\\]|\$\$)",
         re.S | re.M,
         )
-
     def repl(m: re.Match) -> str:
         indent, before, body = m.group(1), m.group(2), m.group(3)
         body = body.strip()
         if not body:
             return m.group(0)
         marker = re.match(r"((?:[-*+]|\d+[.)])[ \t]+)", before)
-        if marker:  # inside a list item: continuation lines align with item text
+        if marker:
             indent = indent + " " * len(marker.group(1))
         lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
         out = "\n"
@@ -1471,51 +1401,30 @@ def _fix_display_math(text: str) -> str:
         out += "".join(indent + ln + "\n" for ln in lines)
         out += indent + "$$\n\n" + indent
         return out
-
     return pattern.sub(repl, text)
 
-
 def _normalize_math_markup(text: str) -> str:
-    """Repair common malformed math/Markdown emitted by small local chat models."""
     if not text:
         return text
-
-    # Convert common display/inline delimiters to remark-math's supported form.
     text = _fix_display_math(text)
     text = re.sub(r"\\\(([^\n]*?)\\\)", lambda m: "$" + m.group(1).strip() + "$", text)
-
-    # A ```math fence is not rendered by remark-math as display math.
     text = re.sub(
         r"(?is)```\s*math\s*\n([\s\S]*?)\n```",
         lambda m: "$$\n" + m.group(1).strip() + "\n$$",
         text,
     )
-
     text = re.sub(r"(?<=[.)\]])[ \t]+(#{2,4} [A-Z])", r"\n\n\1", text)
-
-    # Undo common escaped-Markdown and Unicode-star artifacts.
     text = text.replace(r"\*\*", "**").replace("∗∗", "**")
     text = re.sub(r"(?m)^\\-{3,}\s*$", "---", text)
     text = text.replace(r"\det!", r"\det")
-
-    # Repair row separators inside LaTeX matrix environments. Small models often
-    # emit a single slash before the first entry of the next row (e.g. `\\1` or
-    # `\\v_2`) where LaTeX requires `\\\\`.
     matrix_pattern = r"\\begin\{(b|p|B|v|V)?matrix\}.*?\\end\{(?:b|p|B|v|V)?matrix\}"
-
     def repair_matrix(match: re.Match) -> str:
         block = match.group(0)
-        # Missing row-break slash before numeric or indexed vector entries.
         block = re.sub(r"(?<!\\)\\(?=[+-]?\d)", r"\\\\", block)
         block = re.sub(r"(?<!\\)\\(?=v_\{?\d)", r"\\\\", block)
-        # Previous variant: a slash followed by whitespace at a row boundary.
         block = re.sub(r"(?<!\\)\\[ \t]+(?=[+-]?\d|v_?\d)", r"\\\\", block)
         return block
-
     text = re.sub(matrix_pattern, repair_matrix, text, flags=re.S)
-
-    # Convert standalone square-bracketed equations to display math, but do not
-    # touch ordinary Markdown lists or checkbox lines.
     lines = text.splitlines()
     for i, line in enumerate(lines):
         stripped = line.strip()
@@ -1529,9 +1438,6 @@ def _normalize_math_markup(text: str) -> str:
             if looks_math:
                 lines[i] = "$$\n" + inner + "\n$$"
     text = "\n".join(lines)
-
-    # Wrap standalone raw LaTeX/equation lines. Qwen often omits dollar signs,
-    # leaving valid commands such as \frac or \begin{bmatrix} as literal text.
     wrapped_lines = []
     in_display_math = False
     for line in text.splitlines():
@@ -1562,32 +1468,23 @@ def _normalize_math_markup(text: str) -> str:
     text = re.sub(r",\s*;", ",", text)
     text = text.replace(r"\end{bmatrix}!", r"\end{bmatrix}")
     text = text.replace(r"\end{pmatrix}!", r"\end{pmatrix}")
-
-    # Fix a few frequent punctuation substitutions inside math delimiters.
     def clean_math(match: re.Match) -> str:
         body = match.group(1)
         body = re.sub(r"\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
         body = re.sub(r"(?<!\\),\s*dx\b", r"\,dx", body)
         body = re.sub(r"(?<!\\),\s*dy\b", r"\,dy", body)
         return "$" + body + "$"
-
     text = re.sub(r"\$\$(.*?)\$\$", lambda m: "$$" + clean_math_inline(m.group(1)) + "$$", text, flags=re.S)
     text = re.sub(r"(?<!\$)\$(?!\$)([^\n]+?)(?<!\$)\$(?!\$)", clean_math, text)
     return text
 
-
 def clean_math_inline(body: str) -> str:
-    """Small helper for display-math bodies (without delimiters)."""
     body = re.sub(r"\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
     body = re.sub(r"(?<!\\),\s*dx\b", r"\,dx", body)
     body = re.sub(r"(?<!\\),\s*dy\b", r"\,dy", body)
     return body
 
-
 def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
-    """Use the configured NLP model for conversation and contextual follow-ups."""
-    # Keep enough of the previous exchange for references such as "explain all five"
-    # while limiting prompt size for local models.
     recent_messages = (history or [])[-10:]
     context_parts = []
     for message in recent_messages:
@@ -1671,7 +1568,6 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
 
 
 def _is_replay_request(text: str) -> bool:
-    """Detect requests to repeat the prior solution, not requests to simplify it."""
     normalized = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
     if any(term in normalized for term in (
@@ -1687,7 +1583,6 @@ def _is_replay_request(text: str) -> bool:
 
 
 def _last_user_request(history: list[dict], current_text: str = "") -> str | None:
-    """Find the latest substantive user prompt, skipping the current follow-up."""
     current_normalized = re.sub(r"\s+", " ", current_text.lower()).strip()
     for message in reversed(history):
         if str(message.get("role", "")).lower() != "user":
@@ -1696,15 +1591,13 @@ def _last_user_request(history: list[dict], current_text: str = "") -> str | Non
         if not content:
             continue
         normalized = re.sub(r"\s+", " ", content.lower()).strip()
-        # Some API callers include the current user turn in history. Do not
-        # mistake it, or a previous replay request, for the original problem.
         if normalized == current_normalized or _is_replay_request(content):
             continue
         return content
     return None
 
 
-def answer_math(text: str, history: list[dict] | None = None) -> dict:
+def answer_math(text: str, history: list[dict] | None = None, on_event: Callable[[str, str], None] | None = None) -> dict:
     if not isinstance(text, str) or not text.strip():
         return {
             "success": False, "operation": None, "result": None, "steps": [],
@@ -1714,30 +1607,25 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
     clean_text = text.strip()
     history = history or []
 
-    # For a pure repeat request, rerun the previous mathematical prompt through
-    # the structured solver instead of asking the LLM to rewrite its answer.
-    # Requests for simpler/easier wording deliberately remain conversational.
     if _is_replay_request(clean_text):
         previous_request = _last_user_request(history, clean_text)
         if previous_request and previous_request.lower() != clean_text.lower():
-            replayed = answer_math(previous_request, history=[])
+            replayed = answer_math(previous_request, history=[], on_event=on_event)
             if replayed.get("response"):
                 return replayed
 
-    # Multi-step (JEE-style) problems go to the tool-using reasoning agent.
-    # "/solve <problem>" forces it. Needs LLM_PROVIDER=groq and GROQ_API_KEY.
     forced = clean_text.lower().startswith("/solve")
     if forced:
         clean_text = clean_text[6:].strip() or clean_text
+
     if reasoning_agent.reasoning_available() and (
             forced or reasoning_agent.is_hard_problem(clean_text, history)):
-        return reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+        return reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
 
     tasks = _split_tasks(clean_text)
 
-    # Process compound prompts independently, preserving a combined API response.
     if len(tasks) > 1:
-        results = [answer_math(task, history) for task in tasks]
+        results = [answer_math(task, history, on_event=on_event) for task in tasks]
         success = all(item.get("success", False) for item in results)
         response = "\n\n".join(
             f"**{i + 1}. {task}**\n{item.get('response', '')}"
@@ -1755,14 +1643,12 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
         if (planned.get("category"), planned.get("operation")) in OPS:
             return _llm_verify_fastpath(clean_text, execute(planned))
 
-        # A short problem the single-operation planner can't express (areas, loci,
-        # word problems...) also goes to the reasoning agent.
         if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
-            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
             if deep.get("success"):
                 return deep
 
-        # Unsupported/non-math turns and contextual follow-ups are handled conversationally.
+        if on_event: on_event("status", "Generating conversational reply...")
         reply = _conversational_reply(clean_text, history)
         return {
             "success": True, "operation": "conversation", "result": reply,
@@ -1771,7 +1657,7 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
     except (ValueError, TypeError, SyntaxError, sp.SympifyError,
             ZeroDivisionError, OverflowError) as error:
         if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
-            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
             if deep.get("success"):
                 return deep
         return {

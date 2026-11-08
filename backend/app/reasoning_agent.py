@@ -1,20 +1,3 @@
-"""Deep-solve agent for multi-step (JEE-style) problems.
-
-The LLM reasons about the problem and calls exact SymPy tools for every
-calculation. It must verify its answer with a tool before finishing. Tools are
-parsed with a strict whitelist (no arbitrary Python) and run in a child process
-with a timeout, so a runaway computation cannot hang the server.
-
-Environment variables (all optional except GROQ_API_KEY):
-    GROQ_REASONING_MODEL   default "openai/gpt-oss-120b"
-    GROQ_REASONING_EFFORT  low | medium | high (default "high"; gpt-oss models)
-    JEE_SAMPLES            1-3 independent attempts; >1 enables majority voting
-    JEE_MAX_STEPS          max tool-calling rounds per attempt (default 10)
-    JEE_DEADLINE_SECONDS   total time budget per question (default 120)
-    JEE_VERIFY             1 (default) = every answer is independently verified; 0 = off
-    JEE_FIX_ROUNDS         re-solve attempts after a failed verification (default 2)
-"""
-
 from __future__ import annotations
 
 import json
@@ -48,17 +31,11 @@ MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
 TOOL_TIMEOUT = 12
 MAX_TOOL_OUTPUT = 1500
 
-
-# --------------------------------------------------------------------------- #
-# Availability and routing
-# --------------------------------------------------------------------------- #
-
 def reasoning_available() -> bool:
     return (
             os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "groq"
             and bool(os.getenv("GROQ_API_KEY"))
     )
-
 
 _FOLLOWUP = re.compile(
     r"^\s*(explain|why|how come|what do you mean|what does|simplif|elaborate|"
@@ -89,19 +66,12 @@ def _is_followup(text: str, history: list[dict] | None) -> bool:
 
 
 def looks_like_problem(text: str, history: list[dict] | None = None) -> bool:
-    """True for something that reads like a math problem (not chit-chat or a follow-up)."""
     return bool(_MATH_CUE.search(text)) and not _is_followup(text, history)
 
 
 def is_hard_problem(text: str, history: list[dict] | None = None) -> bool:
-    """Long, word-problem-style input that the single-operation planner can't handle."""
     words = len(text.split())
     return (len(text) >= 110 or words >= 18) and looks_like_problem(text, history)
-
-
-# --------------------------------------------------------------------------- #
-# Safe parsing
-# --------------------------------------------------------------------------- #
 
 _FUNCS: dict[str, Any] = {
     "sin": sp.sin, "cos": sp.cos, "tan": sp.tan, "cot": sp.cot, "sec": sp.sec,
@@ -129,7 +99,6 @@ _FORBIDDEN = re.compile(
 
 
 def _P(text: Any) -> Any:
-    """Parse a math expression from the model. Raises ValueError with a helpful hint."""
     s = str(text).strip()
     if not s:
         raise ValueError("empty expression")
@@ -147,12 +116,11 @@ def _P(text: Any) -> Any:
             s, local_dict=dict(_FUNCS), global_dict=dict(_PARSE_GLOBALS),
             transformations=_TRANSFORMS, evaluate=True,
         )
-    except Exception as error:  # SyntaxError, TypeError, SympifyError, ...
+    except Exception as error:
         raise ValueError(f"could not parse '{s}': {error}") from error
 
 
 def _eq(text: Any) -> Any:
-    """'lhs = rhs' -> lhs - rhs; otherwise treat as an expression equal to 0."""
     s = str(text).replace("==", "=")
     if "=" in s and not re.search(r"[<>!]=|=[<>]", s):
         lhs, rhs = s.split("=", 1)
@@ -175,11 +143,6 @@ def _fmt(value: Any) -> str:
     except Exception:
         pass
     return out
-
-
-# --------------------------------------------------------------------------- #
-# Tools (each returns a short string)
-# --------------------------------------------------------------------------- #
 
 def t_calc(expression: str) -> str:
     return _fmt(sp.simplify(_P(expression)))
@@ -238,7 +201,6 @@ def t_substitute(expression: str, values: dict[str, str]) -> str:
 
 
 def t_check_equal(a: str, b: str) -> str:
-    """Symbolic then numeric equality test. Use it to verify answers."""
     diff = sp.simplify(_P(a) - _P(b))
     if diff == 0:
         return "EQUAL (symbolic)"
@@ -342,14 +304,13 @@ TOOL_SPECS = [
 def _child(conn, fn, kwargs) -> None:
     try:
         conn.send(("ok", fn(**kwargs)))
-    except BaseException as error:  # noqa: BLE001 - report everything to the model
+    except BaseException as error:
         conn.send(("err", f"{type(error).__name__}: {error}"))
     finally:
         conn.close()
 
 
 def run_tool(name: str, kwargs: dict, timeout: float = TOOL_TIMEOUT) -> tuple[bool, str]:
-    """Run a tool in a forked child with a timeout. Returns (ok, text)."""
     if name not in REGISTRY:
         return False, f"unknown tool '{name}'. Available: {', '.join(REGISTRY)}"
     fn = REGISTRY[name][0]
@@ -359,10 +320,10 @@ def run_tool(name: str, kwargs: dict, timeout: float = TOOL_TIMEOUT) -> tuple[bo
         proc = ctx.Process(target=_child, args=(child, fn, kwargs), daemon=True)
         proc.start()
         child.close()
-    except (ValueError, OSError, AssertionError):  # no fork (e.g. Windows): run inline
+    except (ValueError, OSError, AssertionError):
         try:
             return True, _clip(fn(**kwargs))
-        except Exception as error:  # noqa: BLE001
+        except Exception as error:
             return False, f"{type(error).__name__}: {error}"
     try:
         if not parent.poll(timeout):
@@ -380,11 +341,6 @@ def run_tool(name: str, kwargs: dict, timeout: float = TOOL_TIMEOUT) -> tuple[bo
 def _clip(text: str) -> str:
     text = str(text)
     return text if len(text) <= MAX_TOOL_OUTPUT else text[:MAX_TOOL_OUTPUT] + " …[truncated]"
-
-
-# --------------------------------------------------------------------------- #
-# Agent loop
-# --------------------------------------------------------------------------- #
 
 SYSTEM_PROMPT = """You are MathMind's deep-solve engine for JEE Main/Advanced level mathematics.
 
@@ -420,7 +376,7 @@ def _chat(messages: list[dict], model: str, temperature: float) -> dict:
     for attempt in range(2):
         response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(5, 70))
         if response.status_code == 400 and "reasoning_effort" in payload and attempt == 0:
-            payload.pop("reasoning_effort")  # model does not support it
+            payload.pop("reasoning_effort")
             continue
         break
     if response.status_code == 429:
@@ -449,8 +405,7 @@ Rules:
 Use "inconclusive" if you could not decide. Never answer "correct" without tool evidence."""
 
 
-def _agent_loop(system: str, user: str, temperature: float, deadline: float, max_steps: int) -> dict:
-    """Generic tool-calling loop. Returns {"content", "trace", "verdicts"}."""
+def _agent_loop(system: str, user: str, temperature: float, deadline: float, max_steps: int, on_event: Callable | None = None) -> dict:
     messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     trace: list[str] = []
     verdicts: list[str] = []
@@ -461,7 +416,7 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
             raise AgentError("This problem took too long to solve. Try breaking it into smaller parts.")
         try:
             message = _chat(messages, REASONING_MODEL, temperature)
-        except ValueError:  # malformed tool call from the model
+        except ValueError:
             format_errors += 1
             if format_errors > 2:
                 raise AgentError("The model produced malformed tool calls. Please try again.")
@@ -487,6 +442,11 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
                 args = json.loads(fn.get("arguments") or "{}")
                 if not isinstance(args, dict):
                     raise ValueError("arguments must be an object")
+
+                if on_event:
+                    pretty_name = name.replace("_", " ").title()
+                    on_event("tool", f"Running {pretty_name}...")
+
                 ok, output = run_tool(name, args)
             except (ValueError, TypeError) as error:
                 ok, output = False, f"bad arguments: {error}"
@@ -497,7 +457,6 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
             messages.append({"role": "tool", "tool_call_id": call.get("id", ""),
                              "content": output if ok else f"ERROR: {output}"})
 
-    # Out of steps: ask for a final answer with no more tools.
     messages.append({"role": "user", "content": "Stop using tools. Give your final response now, "
                                                 "in exactly the format requested."})
     payload = {"model": REASONING_MODEL, "messages": messages, "temperature": temperature,
@@ -511,7 +470,7 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
 
 
 def _run_attempt(question: str, history: list[dict] | None, temperature: float, deadline: float,
-                 feedback: str | None = None) -> dict:
+                 feedback: str | None = None, on_event: Callable | None = None) -> dict:
     user = question
     ctx = _context(history)
     if ctx:
@@ -520,7 +479,7 @@ def _run_attempt(question: str, history: list[dict] | None, temperature: float, 
         user += ("\n\nAn independent verifier checked your previous answer and found a problem:\n"
                  f"{feedback}\nRe-solve carefully. Do not simply accept the verifier's suggestion; "
                  "confirm any new answer with tools.")
-    return _agent_loop(SYSTEM_PROMPT, user, temperature, deadline, MAX_STEPS)
+    return _agent_loop(SYSTEM_PROMPT, user, temperature, deadline, MAX_STEPS, on_event=on_event)
 
 
 def _parse_json(text: str) -> dict:
@@ -535,19 +494,13 @@ def _parse_json(text: str) -> dict:
 
 
 def verify_solution(question: str, claimed: str, deadline: float | None = None) -> dict:
-    """Independently verify a claimed answer with a skeptical, tool-using agent.
-
-    Returns {"verdict": correct|incorrect|inconclusive|unavailable, "evidence", "corrected", "tool_calls"}.
-    The verifier never sees the solver's reasoning, only the problem and the claimed answer, and a
-    "correct" verdict is rejected unless at least one tool call actually succeeded.
-    """
     deadline = deadline or time.monotonic() + 60
     user = f"PROBLEM:\n{question}\n\nCLAIMED ANSWER:\n{claimed}"
     try:
         run = _agent_loop(VERIFIER_PROMPT, user, 0.0, deadline, 6)
     except AgentError as error:
         return {"verdict": "unavailable", "evidence": str(error), "corrected": "", "tool_calls": 0}
-    except Exception as error:  # noqa: BLE001 - verification must never crash the answer
+    except Exception as error:
         logger.exception("verifier crashed")
         return {"verdict": "unavailable", "evidence": f"{type(error).__name__}", "corrected": "", "tool_calls": 0}
     ok_calls = sum(1 for line in run["trace"] if "-> ok:" in line)
@@ -594,7 +547,6 @@ def _format_answer(answer: str) -> str:
 
 
 def _pick(runs: list[dict]) -> tuple[dict, tuple[int, int] | None]:
-    """Majority vote among attempts that produced an answer."""
     answered = [r for r in runs if r["answer"]]
     if len(answered) < 2:
         return runs[0], None
@@ -603,8 +555,8 @@ def _pick(runs: list[dict]) -> tuple[dict, tuple[int, int] | None]:
 
 
 def solve_hard(question: str, history: list[dict] | None = None,
-               normalize: Callable[[str], str] | None = None) -> dict:
-    """Solve a multi-step problem, then verify it independently. Same shape as answer_math()."""
+               normalize: Callable[[str], str] | None = None,
+               on_event: Callable[[str, str], None] | None = None) -> dict:
     normalize = normalize or (lambda s: s)
     deadline = time.monotonic() + DEADLINE
     chosen: dict | None = None
@@ -617,15 +569,18 @@ def solve_hard(question: str, history: list[dict] | None = None,
         runs: list[dict] = []
         try:
             for i in range(SAMPLES if round_no == 0 else 1):
-                run = _run_attempt(question, history, 0.2 if i == 0 else 0.7, deadline, feedback)
+                if on_event:
+                    on_event("status", f"Solving (attempt {i+1})...")
+
+                run = _run_attempt(question, history, 0.2 if i == 0 else 0.7, deadline, feedback, on_event=on_event)
                 run["body"], run["answer"] = _split_answer(run["content"])
                 runs.append(run)
                 if i == 1 and runs[0]["answer"] and run["answer"] and _same(runs[0]["answer"], run["answer"]):
-                    break  # two independent attempts agree; no third needed
+                    break
         except AgentError as exc:
             error = exc
         if not runs:
-            break  # keep whatever we had from the previous round
+            break
         chosen, agreement = _pick(runs)
 
         if not VERIFY_ENABLED:
@@ -634,6 +589,10 @@ def solve_hard(question: str, history: list[dict] | None = None,
         if deadline - time.monotonic() < 15:
             verdict = {"verdict": "unavailable", "evidence": "ran out of time", "corrected": ""}
             break
+
+        if on_event:
+            on_event("status", "Independently verifying the answer...")
+
         verdict = verify_solution(question, chosen["answer"] or chosen["body"][-1200:], deadline)
         if verdict["verdict"] != "incorrect":
             break

@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import uuid
+import queue
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -12,6 +14,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import auth
@@ -233,26 +236,46 @@ def chat(p: Chat, user: dict = Depends(current_user)):
  text = p.message.strip()
  if not text:
   raise HTTPException(400, "Empty message")
+
  cid = ensure(p.conversation_id, user["id"])
  save(cid, "user", text)
+
  with connect() as c:
   rows = c.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 12",
                    (cid,)).fetchall()
- hist = [dict(r) for r in rows][1:]
- hist.reverse()
- try:
-  result = answer_math(text, hist)
- except Exception as e:  # noqa: BLE001
-  logger.exception("answer_math failed")
-  result = {"success": False, "operation": None, "result": None, "steps": [], "verification": None,
-            "response": f"I couldn't process that request: {e}", "error": str(e)}
- save(cid, "assistant", result["response"], result)
- return {"conversation_id": cid, **result}
+  hist = [dict(r) for r in rows][1:]
+  hist.reverse()
 
+ q = queue.Queue()
 
-# --------------------------------------------------------------------------- #
-# File upload: photos, handwriting, PDFs, documents -> editable question text
-# --------------------------------------------------------------------------- #
+ def run_math_agent():
+  try:
+   result = answer_math(text, hist, on_event=lambda t, m: q.put({"type": t, "content": m}))
+   save(cid, "assistant", result["response"], result)
+   q.put({"type": "result", "data": {"conversation_id": cid, **result}})
+  except Exception as e:
+   logger.exception("answer_math failed")
+   err_result = {"success": False, "operation": None, "result": None, "steps": [],
+                 "verification": None, "response": f"I couldn't process that: {e}", "error": str(e)}
+   save(cid, "assistant", err_result["response"], err_result)
+   q.put({"type": "result", "data": {"conversation_id": cid, **err_result}})
+
+ def event_generator():
+  thread = threading.Thread(target=run_math_agent, daemon=True)
+  thread.start()
+
+  while True:
+   item = q.get()
+   yield f"data: {json.dumps(item)}\n\n"
+   if item["type"] == "result":
+    break
+
+ return StreamingResponse(
+  event_generator(),
+  media_type="text/event-stream",
+  headers={"X-Accel-Buffering": "no"} # Prevents proxy buffering
+ )
+
 
 @app.post("/api/extract")
 def extract(files: list[UploadFile] = File(...), user: dict = Depends(current_user)):
