@@ -3,3 +3,7 @@ uvicorn[standard]
 sympy
 requests
 python-dotenv
+python-multipart     # file uploads
+pillow               # image resizing for photos / handwriting
+pypdfium2            # read PDFs (text layer + render scanned pages), permissive license
+psycopg[binary]      # only needed if you set DATABASE_URL to a PostgreSQL database

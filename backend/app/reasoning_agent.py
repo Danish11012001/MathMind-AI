@@ -10,7 +10,9 @@ Environment variables (all optional except GROQ_API_KEY):
     GROQ_REASONING_EFFORT  low | medium | high (default "high"; gpt-oss models)
     JEE_SAMPLES            1-3 independent attempts; >1 enables majority voting
     JEE_MAX_STEPS          max tool-calling rounds per attempt (default 10)
-    JEE_DEADLINE_SECONDS   total time budget per question (default 85)
+    JEE_DEADLINE_SECONDS   total time budget per question (default 120)
+    JEE_VERIFY             1 (default) = every answer is independently verified; 0 = off
+    JEE_FIX_ROUNDS         re-solve attempts after a failed verification (default 2)
 """
 
 from __future__ import annotations
@@ -40,7 +42,9 @@ REASONING_MODEL = os.getenv("GROQ_REASONING_MODEL", "openai/gpt-oss-120b")
 REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "high").strip().lower()
 MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "10"))
 SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
-DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "85"))
+DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
+VERIFY_ENABLED = os.getenv("JEE_VERIFY", "1").strip() != "0"
+MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
 TOOL_TIMEOUT = 12
 MAX_TOOL_OUTPUT = 1500
 
@@ -51,8 +55,8 @@ MAX_TOOL_OUTPUT = 1500
 
 def reasoning_available() -> bool:
     return (
-        os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "groq"
-        and bool(os.getenv("GROQ_API_KEY"))
+            os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "groq"
+            and bool(os.getenv("GROQ_API_KEY"))
     )
 
 
@@ -132,7 +136,7 @@ def _P(text: Any) -> Any:
     if len(s) > 800:
         raise ValueError("expression too long")
     s = (s.replace("−", "-").replace("×", "*").replace("÷", "/").replace("π", "pi")
-          .replace("²", "**2").replace("³", "**3").replace("√", "sqrt"))
+         .replace("²", "**2").replace("³", "**3").replace("√", "sqrt"))
     if _FORBIDDEN.search(s):
         raise ValueError(
             "disallowed characters. Use plain syntax only: * for multiplication, "
@@ -297,37 +301,37 @@ def _schema(props: dict, required: list[str]) -> dict:
 _S = {"type": "string"}
 REGISTRY: dict[str, tuple[Callable[..., str], str, dict]] = {
     "calc": (t_calc, "Simplify/evaluate an expression exactly (also gives a decimal). Use for ALL arithmetic, "
-             "binomial(n,r), factorial(n), complex numbers (use I), Matrix(...) expressions.",
+                     "binomial(n,r), factorial(n), complex numbers (use I), Matrix(...) expressions.",
              _schema({"expression": _S}, ["expression"])),
     "solve_equations": (t_solve_equations, "Solve equation(s) like 'x**2 - 5*x + 6 = 0'. domain: 'real' or 'complex'. "
-             "Use real for one equation in one variable when roots must be real.",
-             _schema({"equations": {"type": "array", "items": _S}, "variables": {"type": "array", "items": _S},
-                      "domain": {"type": "string", "enum": ["real", "complex"]}}, ["equations", "variables"])),
+                                           "Use real for one equation in one variable when roots must be real.",
+                        _schema({"equations": {"type": "array", "items": _S}, "variables": {"type": "array", "items": _S},
+                                 "domain": {"type": "string", "enum": ["real", "complex"]}}, ["equations", "variables"])),
     "solve_inequality": (t_solve_inequality, "Solve a one-variable inequality, e.g. 'x**2 - 5*x + 6 < 0'.",
-             _schema({"inequality": _S, "variable": _S}, ["inequality", "variable"])),
+                         _schema({"inequality": _S, "variable": _S}, ["inequality", "variable"])),
     "differentiate": (t_differentiate, "Derivative of expression w.r.t. variable (optional order).",
-             _schema({"expression": _S, "variable": _S, "order": {"type": "integer"}}, ["expression", "variable"])),
+                      _schema({"expression": _S, "variable": _S, "order": {"type": "integer"}}, ["expression", "variable"])),
     "integrate": (t_integrate, "Indefinite integral, or definite if lower and upper are given (use 'oo' for infinity).",
-             _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S}, ["expression", "variable"])),
+                  _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S}, ["expression", "variable"])),
     "limit": (t_limit, "Limit of expression as variable -> point. direction: '+', '-' or '+-'.",
-             _schema({"expression": _S, "variable": _S, "point": _S, "direction": _S}, ["expression", "variable", "point"])),
+              _schema({"expression": _S, "variable": _S, "point": _S, "direction": _S}, ["expression", "variable", "point"])),
     "series": (t_series, "Taylor/Laurent series of expression around point up to the given order.",
-             _schema({"expression": _S, "variable": _S, "point": _S, "order": {"type": "integer"}}, ["expression", "variable"])),
+               _schema({"expression": _S, "variable": _S, "point": _S, "order": {"type": "integer"}}, ["expression", "variable"])),
     "sum_product": (t_sum_product, "Finite or infinite sum/product of expression over variable from lower to upper.",
-             _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S,
-                      "kind": {"type": "string", "enum": ["sum", "product"]}}, ["expression", "variable", "lower", "upper"])),
+                    _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S,
+                             "kind": {"type": "string", "enum": ["sum", "product"]}}, ["expression", "variable", "lower", "upper"])),
     "substitute": (t_substitute, "Substitute values into an expression, e.g. values {'x': '2', 'y': '1/2'}. "
-             "Use to plug an answer back into the original conditions.",
-             _schema({"expression": _S, "values": {"type": "object", "additionalProperties": _S}}, ["expression", "values"])),
+                                 "Use to plug an answer back into the original conditions.",
+                   _schema({"expression": _S, "values": {"type": "object", "additionalProperties": _S}}, ["expression", "values"])),
     "check_equal": (t_check_equal, "Check whether two expressions are equal (symbolic, then numeric). "
-             "Use this to VERIFY a final answer against an independent computation.",
-             _schema({"a": _S, "b": _S}, ["a", "b"])),
+                                   "Use this to VERIFY a final answer against an independent computation.",
+                    _schema({"a": _S, "b": _S}, ["a", "b"])),
     "extremum": (t_extremum, "Critical points and values for max/min of f(variable), optionally on [lower, upper] "
-             "(endpoints are included).",
-             _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S}, ["expression", "variable"])),
+                             "(endpoints are included).",
+                 _schema({"expression": _S, "variable": _S, "lower": _S, "upper": _S}, ["expression", "variable"])),
     "matrix_op": (t_matrix_op, "Matrix operation on a matrix like '[[1,2],[3,4]]'. "
-             "op: det, inverse, rank, eigenvals, eigenvects, transpose, trace, rref, nullspace, charpoly.",
-             _schema({"matrix": _S, "op": _S}, ["matrix", "op"])),
+                               "op: det, inverse, rank, eigenvals, eigenvects, transpose, trace, rref, nullspace, charpoly.",
+                  _schema({"matrix": _S, "op": _S}, ["matrix", "op"])),
 }
 TOOL_SPECS = [
     {"type": "function", "function": {"name": n, "description": d, "parameters": p}}
@@ -433,17 +437,26 @@ def _context(history: list[dict] | None) -> str:
     return "\n".join(parts)[-5000:]
 
 
-def _run_attempt(question: str, history: list[dict] | None, temperature: float, deadline: float) -> dict:
-    user = question
-    ctx = _context(history)
-    if ctx:
-        user = f"Earlier conversation (for reference only):\n{ctx}\n\nProblem to solve now:\n{question}"
-    messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
+VERIFIER_PROMPT = """You are an independent, skeptical verifier of math answers. You receive a PROBLEM and a CLAIMED answer. Do not trust the claim.
+
+Rules:
+1. Check with tools: plug the claimed answer back into the original conditions (substitute / check_equal) and/or solve the problem independently by a DIFFERENT method.
+2. You MUST run at least one tool and base your verdict on its output.
+3. Check completeness: every part asked for, every valid root or case, extraneous roots, domain restrictions, signs, and (for multiple choice) that the chosen option matches the computed value.
+4. Tool syntax: plain text only. Use * for multiplication, ** or ^ for powers, sqrt(), pi, I, E, oo. No LaTeX.
+5. Reply with ONLY a JSON object, no other text:
+{"verdict": "correct" | "incorrect" | "inconclusive", "evidence": "<1-3 sentences citing tool results>", "corrected_answer": "<the right answer if you found one, else empty>"}
+Use "inconclusive" if you could not decide. Never answer "correct" without tool evidence."""
+
+
+def _agent_loop(system: str, user: str, temperature: float, deadline: float, max_steps: int) -> dict:
+    """Generic tool-calling loop. Returns {"content", "trace", "verdicts"}."""
+    messages: list[dict] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     trace: list[str] = []
     verdicts: list[str] = []
     format_errors = 0
 
-    for _ in range(MAX_STEPS + 1):
+    for _ in range(max_steps + 1):
         if time.monotonic() > deadline:
             raise AgentError("This problem took too long to solve. Try breaking it into smaller parts.")
         try:
@@ -453,7 +466,7 @@ def _run_attempt(question: str, history: list[dict] | None, temperature: float, 
             if format_errors > 2:
                 raise AgentError("The model produced malformed tool calls. Please try again.")
             messages.append({"role": "user", "content": "Your last tool call was malformed. "
-                             "Call the tool again with valid JSON arguments."})
+                                                        "Call the tool again with valid JSON arguments."})
             continue
         except requests.RequestException as error:
             raise AgentError(f"Could not reach the AI service: {error}") from error
@@ -485,8 +498,8 @@ def _run_attempt(question: str, history: list[dict] | None, temperature: float, 
                              "content": output if ok else f"ERROR: {output}"})
 
     # Out of steps: ask for a final answer with no more tools.
-    messages.append({"role": "user", "content": "Stop using tools. Write the final solution now, "
-                     "ending with the FINAL_ANSWER line."})
+    messages.append({"role": "user", "content": "Stop using tools. Give your final response now, "
+                                                "in exactly the format requested."})
     payload = {"model": REASONING_MODEL, "messages": messages, "temperature": temperature,
                "max_completion_tokens": 3000}
     response = requests.post(GROQ_URL, json=payload, timeout=(5, 60),
@@ -495,6 +508,58 @@ def _run_attempt(question: str, history: list[dict] | None, temperature: float, 
         raise AgentError("The solver ran out of steps before finishing.")
     content = (response.json()["choices"][0]["message"].get("content") or "").strip()
     return {"content": content, "trace": trace, "verdicts": verdicts}
+
+
+def _run_attempt(question: str, history: list[dict] | None, temperature: float, deadline: float,
+                 feedback: str | None = None) -> dict:
+    user = question
+    ctx = _context(history)
+    if ctx:
+        user = f"Earlier conversation (for reference only):\n{ctx}\n\nProblem to solve now:\n{question}"
+    if feedback:
+        user += ("\n\nAn independent verifier checked your previous answer and found a problem:\n"
+                 f"{feedback}\nRe-solve carefully. Do not simply accept the verifier's suggestion; "
+                 "confirm any new answer with tools.")
+    return _agent_loop(SYSTEM_PROMPT, user, temperature, deadline, MAX_STEPS)
+
+
+def _parse_json(text: str) -> dict:
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(0))
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def verify_solution(question: str, claimed: str, deadline: float | None = None) -> dict:
+    """Independently verify a claimed answer with a skeptical, tool-using agent.
+
+    Returns {"verdict": correct|incorrect|inconclusive|unavailable, "evidence", "corrected", "tool_calls"}.
+    The verifier never sees the solver's reasoning, only the problem and the claimed answer, and a
+    "correct" verdict is rejected unless at least one tool call actually succeeded.
+    """
+    deadline = deadline or time.monotonic() + 60
+    user = f"PROBLEM:\n{question}\n\nCLAIMED ANSWER:\n{claimed}"
+    try:
+        run = _agent_loop(VERIFIER_PROMPT, user, 0.0, deadline, 6)
+    except AgentError as error:
+        return {"verdict": "unavailable", "evidence": str(error), "corrected": "", "tool_calls": 0}
+    except Exception as error:  # noqa: BLE001 - verification must never crash the answer
+        logger.exception("verifier crashed")
+        return {"verdict": "unavailable", "evidence": f"{type(error).__name__}", "corrected": "", "tool_calls": 0}
+    ok_calls = sum(1 for line in run["trace"] if "-> ok:" in line)
+    data = _parse_json(run["content"])
+    verdict = str(data.get("verdict", "")).strip().lower()
+    if verdict not in {"correct", "incorrect", "inconclusive"}:
+        verdict = "inconclusive"
+    evidence = str(data.get("evidence", "")).strip()[:400]
+    if verdict == "correct" and ok_calls == 0:
+        verdict, evidence = "inconclusive", "The verifier did not run any computation."
+    return {"verdict": verdict, "evidence": evidence,
+            "corrected": str(data.get("corrected_answer", "") or "").strip()[:200], "tool_calls": ok_calls}
 
 
 _FINAL = re.compile(r"^\s*\**FINAL_ANSWER\**\s*:\s*(.+?)\s*$", re.I | re.M)
@@ -528,59 +593,73 @@ def _format_answer(answer: str) -> str:
     return answer
 
 
+def _pick(runs: list[dict]) -> tuple[dict, tuple[int, int] | None]:
+    """Majority vote among attempts that produced an answer."""
+    answered = [r for r in runs if r["answer"]]
+    if len(answered) < 2:
+        return runs[0], None
+    best = max(answered, key=lambda r: sum(_same(r["answer"], o["answer"]) for o in answered))
+    return best, (sum(_same(best["answer"], o["answer"]) for o in answered), len(answered))
+
+
 def solve_hard(question: str, history: list[dict] | None = None,
                normalize: Callable[[str], str] | None = None) -> dict:
-    """Solve a multi-step problem. Returns the same dict shape as answer_math()."""
+    """Solve a multi-step problem, then verify it independently. Same shape as answer_math()."""
     normalize = normalize or (lambda s: s)
     deadline = time.monotonic() + DEADLINE
-    runs: list[dict] = []
+    chosen: dict | None = None
+    agreement: tuple[int, int] | None = None
+    verdict: dict | None = None
     error: AgentError | None = None
+    feedback: str | None = None
 
-    for i in range(SAMPLES):
+    for round_no in range(MAX_FIX_ROUNDS + 1):
+        runs: list[dict] = []
         try:
-            run = _run_attempt(question, history, 0.2 if i == 0 else 0.7, deadline)
+            for i in range(SAMPLES if round_no == 0 else 1):
+                run = _run_attempt(question, history, 0.2 if i == 0 else 0.7, deadline, feedback)
+                run["body"], run["answer"] = _split_answer(run["content"])
+                runs.append(run)
+                if i == 1 and runs[0]["answer"] and run["answer"] and _same(runs[0]["answer"], run["answer"]):
+                    break  # two independent attempts agree; no third needed
         except AgentError as exc:
             error = exc
-            break
-        run["body"], run["answer"] = _split_answer(run["content"])
-        runs.append(run)
-        if i == 1 and runs[0]["answer"] and run["answer"] and _same(runs[0]["answer"], run["answer"]):
-            break  # two independent attempts agree; no third needed
+        if not runs:
+            break  # keep whatever we had from the previous round
+        chosen, agreement = _pick(runs)
 
-    if not runs:
+        if not VERIFY_ENABLED:
+            verdict = None
+            break
+        if deadline - time.monotonic() < 15:
+            verdict = {"verdict": "unavailable", "evidence": "ran out of time", "corrected": ""}
+            break
+        verdict = verify_solution(question, chosen["answer"] or chosen["body"][-1200:], deadline)
+        if verdict["verdict"] != "incorrect":
+            break
+        feedback = verdict["evidence"] + (f" The verifier suggests: {verdict['corrected']}." if verdict["corrected"] else "")
+
+    if chosen is None:
         message = str(error or "The solver failed.")
         return {"success": False, "operation": "deep_solve", "result": None, "steps": [],
                 "verification": None, "response": message, "error": message}
 
-    # Majority vote among attempts that produced an answer.
-    chosen, agreement = runs[0], None
-    answered = [r for r in runs if r["answer"]]
-    if len(answered) > 1:
-        best = max(answered, key=lambda r: sum(_same(r["answer"], o["answer"]) for o in answered))
-        votes = sum(_same(best["answer"], o["answer"]) for o in answered)
-        chosen, agreement = best, (votes, len(answered))
-
-    verdicts = chosen["verdicts"]
-    tool_verified = "EQUAL" in verdicts and "NOT EQUAL" not in verdicts[-1:]
-    consistent = agreement is not None and agreement[0] == agreement[1]
-
-    failed_check = bool(verdicts) and verdicts[-1] == "NOT EQUAL"
-
-    if failed_check:
-        verification = False
-        note = "⚠️ A verification check failed and was not resolved. Treat this answer as uncertain."
-    elif tool_verified and (agreement is None or consistent):
-        verification, note = True, "Verification: PASSED (checked with SymPy)"
-    elif agreement is not None and agreement[0] > agreement[1] / 2:
+    state = verdict["verdict"] if verdict else "off"
+    evidence = (verdict or {}).get("evidence", "")
+    if state == "correct":
         verification = True
-        note = f"Verification: PASSED ({agreement[0]} of {agreement[1]} independent attempts agree)"
-    elif agreement is not None:
+        note = "Verification: PASSED (independently checked with SymPy)" + (f"\n\n*Check:* {evidence}" if evidence else "")
+    elif state == "incorrect":
         verification = False
-        note = (f"⚠️ Attempts disagreed ({agreement[0]} of {agreement[1]} matched). "
-                "Treat this answer as uncertain and double-check it.")
+        note = f"⚠️ Verification FAILED: {evidence} This answer is probably wrong, so do not rely on it."
+    elif state == "inconclusive":
+        verification, note = None, "⚠️ Could not be independently verified. Double-check this answer."
+    elif state == "unavailable":
+        verification, note = None, f"⚠️ Verification was unavailable ({evidence}). Double-check this answer."
     else:
-        verification = None
-        note = "⚠️ Not independently verified. Double-check important results."
+        verification, note = None, "⚠️ Verification is switched off (JEE_VERIFY=0). Double-check this answer."
+    if agreement and agreement[0] <= agreement[1] / 2:
+        note += " Independent attempts also disagreed with each other."
 
     parts = [normalize(chosen["body"])]
     if chosen["answer"]:
@@ -589,4 +668,5 @@ def solve_hard(question: str, history: list[dict] | None = None,
     response = "\n\n".join(p for p in parts if p)
 
     return {"success": True, "operation": "deep_solve", "result": chosen["answer"],
-            "steps": chosen["trace"], "verification": verification, "response": response}
+            "steps": chosen["trace"], "verification": verification, "verification_detail": verdict,
+            "response": response}

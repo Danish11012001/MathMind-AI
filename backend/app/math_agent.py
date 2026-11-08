@@ -9,10 +9,15 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import math
 import os
 import re
+import statistics as _stats
+import threading
+from fractions import Fraction
 from typing import Any
 
+import mpmath
 import requests
 import sympy as sp
 from sympy.parsing.sympy_parser import (
@@ -571,13 +576,15 @@ def inline_math(value: Any) -> str:
 
 def pack(operation: str, result: Any, steps: list[str],
          verified: bool | None = True) -> dict:
+    _LOCAL.raw = result
     shown_result = display_math(result)
     response = f"**{operation}**\n\n**Result:** {inline_math(result)}\n\n"
     if steps:
         response += "\n".join(
             f"{i + 1}. {step}" for i, step in enumerate(steps)
         ) + "\n\n"
-    response += f"**Verification:** {'PASSED' if verified else 'NOT CONFIRMED'}"
+    response += "**Verification:** " + (
+        "PASSED" if verified else "NOT CONFIRMED" if verified is not None else "NOT CHECKED")
     return {
         "success": verified is not False, "operation": operation, "result": shown_result,
         "steps": steps, "verification": bool(verified) if verified is not None else None,
@@ -589,7 +596,335 @@ def _step(text: str) -> str:
     return text
 
 
+# --------------------------------------------------------------------------- #
+# Independent verification of every fast-path result
+#
+# Several operations used to report "PASSED" from checks that cannot fail
+# (verified=True, or comparing a result with itself). execute() now overrides
+# those with a real recomputation by a different route (python's math /
+# statistics / fractions modules, numeric evaluation, or sampling). Operations
+# with no cheap independent check are verified by the SymPy-backed verifier
+# agent in answer_math(), or honestly labelled NOT CHECKED.
+# --------------------------------------------------------------------------- #
+
+_LOCAL = threading.local()
+_KEEP = object()  # sentinel: this operation's own check is genuine, keep it
+
+
+def _fr(v: Any) -> Fraction:
+    if not isinstance(v, sp.Basic):
+        v = sp.Rational(str(v))
+    if not v.is_Rational:
+        raise ValueError("not a rational number")
+    return Fraction(int(v.p), int(v.q))
+
+
+def _close(a: float, b: float, tol: float = 1e-9) -> bool:
+    return abs(a - b) <= tol * max(1.0, abs(a), abs(b))
+
+
+def _tiny(x: Any) -> bool:
+    return abs(complex(sp.N(x))) < 1e-8
+
+
+def _trial_prime(n: int) -> bool:
+    if n < 2:
+        return False
+    if n < 4:
+        return True
+    if n % 2 == 0 or n % 3 == 0:
+        return False
+    i = 5
+    while i * i <= n:
+        if n % i == 0 or n % (i + 2) == 0:
+            return False
+        i += 6
+    return True
+
+
+def _ck_combinatorics(p, raw):
+    n = int(p.get("n", p.get("value", 0))); r = int(p.get("r", 0))
+    if n > 3000:
+        return None
+    expected = {"permutations": lambda: math.perm(n, r), "combinations": lambda: math.comb(n, r),
+                "binomial": lambda: math.comb(n, r), "factorial": lambda: math.factorial(n)}[p["operation"]]()
+    return int(raw) == expected
+
+
+def _ck_is_prime(p, raw):
+    n = int(p.get("value", p.get("n", 0)))
+    return None if n > 10**12 else bool(raw) == _trial_prime(n)
+
+
+def _ck_modular(p, raw):
+    n = int(p.get("value", p.get("n", 0))); mod = int(p.get("modulus", 0))
+    return int(raw) == int(p.get("expression", n)) % mod
+
+
+def _ck_gcd_lcm(p, raw):
+    ints = [int(v) for v in p.get("values", [])]
+    return int(raw) == (math.gcd(*ints) if p["operation"] == "gcd" else math.lcm(*ints))
+
+
+def _ck_prime_factors(p, raw):
+    if any(int(q) > 10**12 for q in raw):
+        return None
+    return (math.prod(int(q) ** int(e) for q, e in raw.items()) == int(p.get("value"))
+            and all(_trial_prime(int(q)) for q in raw))
+
+
+def _ck_statistics(p, raw):
+    vals = [_fr(sp.Rational(str(v)) if isinstance(v, (int, float, str)) else sp.sympify(v)) for v in p["values"]]
+    op, n = p["operation"], len(vals)
+    if op == "mean":
+        return _fr(raw) == sum(vals) / n
+    if op == "median":
+        return _fr(raw) == _stats.median(vals)
+    if op == "mode":
+        return {_fr(x) for x in raw} == set(_stats.multimode(vals))
+    variance = _stats.pvariance(vals)
+    if op == "variance":
+        return _fr(raw) == variance
+    return _close(float(sp.N(raw)), math.sqrt(variance))
+
+
+def _ck_geometry(p, raw):
+    a = [float(sp.N(x)) for x in sp.Matrix(p["point_a"])]; b = [float(sp.N(x)) for x in sp.Matrix(p["point_b"])]
+    if p["operation"] == "distance":
+        return _close(float(sp.N(raw)), math.dist(a, b))
+    return all(_close(float(sp.N(r)), (x + y) / 2) for r, x, y in zip(raw, a, b))
+
+
+def _ck_vector(p, raw):
+    op = p["operation"]
+    if op == "dot" and p.get("include_cross"):
+        return _KEEP
+    a = [float(x) for x in p.get("vector_a", p.get("vector", []))]
+    b = [float(x) for x in p.get("vector_b", [])]
+    dot = math.fsum(x * y for x, y in zip(a, b))
+    if op == "dot":
+        return _close(float(sp.N(raw)), dot)
+    cos = dot / (math.sqrt(math.fsum(x * x for x in a)) * math.sqrt(math.fsum(y * y for y in b)))
+    theta = float(sp.N(raw))
+    return 0 <= theta <= math.pi + 1e-12 and _close(math.cos(theta), max(-1.0, min(1.0, cos)), 1e-7)
+
+
+def _ck_probability(p, raw):
+    op = p["operation"]
+    if op == "expected_value":
+        vals = [_fr(v) for v in _parse_list(p.get("values"))]
+        probs = [_fr(q) for q in _parse_list(p.get("probabilities"), "probabilities")]
+        return _fr(raw) == sum(v * q for v, q in zip(vals, probs))
+    if op == "probability":
+        k = int(p.get("successes", 0)); n = int(p.get("trials", 0)); pr = float(sp.N(expr(str(p.get("p", "0")))))
+        return _close(float(sp.N(raw)), math.comb(n, k) * pr ** k * (1 - pr) ** (n - k))
+    a = [_fr(v) for v in _parse_list(p.get("values_a"))]; b = [_fr(v) for v in _parse_list(p.get("values_b"))]
+    n = len(a); ma, mb = sum(a) / n, sum(b) / n
+    cov = sum(x * y for x, y in zip(a, b)) / n - ma * mb
+    if op == "covariance":
+        return _fr(raw) == cov
+    va = sum(x * x for x in a) / n - ma * ma; vb = sum(y * y for y in b) / n - mb * mb
+    return _close(float(sp.N(raw)), float(cov) / math.sqrt(float(va) * float(vb)))
+
+
+def _ck_matrix(p, raw):
+    op = p["operation"]
+    if op in ("add", "subtract", "multiply"):
+        a, b = mat(p.get("matrix_a")), mat(p.get("matrix_b"))
+        shape = (a.rows, b.cols) if op == "multiply" else a.shape
+        if raw.shape != shape:
+            return False
+        for i in range(raw.rows):
+            for j in range(raw.cols):
+                if op == "multiply":
+                    v = sum(a[i, k] * b[k, j] for k in range(a.cols))
+                else:
+                    v = a[i, j] + b[i, j] if op == "add" else a[i, j] - b[i, j]
+                if not _tiny(raw[i, j] - v):
+                    return False
+        return True
+    a = mat(p.get("matrix"))
+    if op == "determinant":
+        return all(_tiny((raw - a.det(method=m)) / max(1, abs(float(sp.N(raw)))))
+                   for m in ("berkowitz", "bareiss"))
+    if op == "transpose":
+        return raw.shape == (a.cols, a.rows) and all(raw[j, i] == a[i, j] for i in range(a.rows) for j in range(a.cols))
+    if op == "rank":
+        return int(raw) == a.T.rank() == len(a.rref()[1])
+    if op == "eigenvalues":
+        n = a.rows
+        return sum(raw.values()) == n and all(_tiny((a - l * sp.eye(n)).det()) for l in raw)
+    rr = raw[0] if isinstance(raw, tuple) else raw  # rref
+    # RREF is unique: rr must be in reduced form AND span the same row space as a.
+    return (rr.shape == a.shape and rr.rref()[0] == rr
+            and rr.rank() == a.rank() == sp.Matrix.vstack(a, rr).rank())
+
+
+def _ck_limit(p, raw):
+    var = SYMBOLS.get(str(p.get("variable", "x")), X)
+    f = expr(str(p.get("expression", ""))); pt = expr(str(p.get("point")))
+    if pt == sp.oo:
+        xs = [sp.Integer(10) ** 6, sp.Integer(10) ** 9]
+    elif pt == -sp.oo:
+        xs = [-sp.Integer(10) ** 6, -sp.Integer(10) ** 9]
+    else:  # sympy's default limit is the right-hand limit
+        xs = [pt + sp.Rational(1, 10**6), pt + sp.Rational(1, 10**9)]
+    vals = [complex(sp.N(f.subs(var, x), 30)) for x in xs]
+    if raw.is_finite:
+        L = complex(sp.N(raw))
+        return all(abs(v - L) <= 1e-3 * max(1.0, abs(L)) for v in vals)
+    if raw in (sp.oo, -sp.oo):
+        sign = 1 if raw == sp.oo else -1
+        return all(sign * v.real > 1e3 for v in vals) and abs(vals[1]) > abs(vals[0])
+    return None
+
+
+def _ck_higher_derivative(p, raw):
+    var = sp.Symbol(str(p.get("variable", "x"))); e = expr(p.get("expression", "")); order = int(p.get("order", 2))
+    checked = 0
+    with mpmath.workdps(30):
+        f = sp.lambdify(var, e, "mpmath"); g = sp.lambdify(var, raw, "mpmath")
+        for x0 in ("0.7", "1.3", "2.1"):
+            try:
+                x0 = mpmath.mpf(x0); d = mpmath.diff(f, x0, order); r = g(x0)
+                if not (mpmath.isfinite(d) and mpmath.isfinite(r)):
+                    continue
+            except Exception:
+                continue
+            if abs(d - r) > mpmath.mpf("1e-8") * max(1, abs(r)):
+                return False
+            checked += 1
+    return True if checked >= 2 else None
+
+
+def _ck_series(p, raw):
+    var = sp.Symbol(str(p.get("variable", "x"))); e = expr(p.get("expression", ""))
+    pt = expr(str(p.get("point", 0))); order = int(p.get("order", 6))
+    with mpmath.workdps(40):
+        f = sp.lambdify(var, e, "mpmath"); g = sp.lambdify(var, raw.removeO(), "mpmath")
+        x0 = mpmath.mpf(str(sp.N(pt, 40)))
+        h1, h2 = mpmath.mpf("1e-2"), mpmath.mpf("1e-3")
+        e1, e2 = abs(f(x0 + h1) - g(x0 + h1)), abs(f(x0 + h2) - g(x0 + h2))
+        if e2 < mpmath.mpf("1e-30"):
+            return True
+        # a correct truncation error shrinks like h^(order+1); a wrong series does not
+        r1, r2 = e1 / h1 ** order, e2 / h2 ** order
+        return bool(r2 < max(mpmath.mpf("1e-9"), r1 / 2))
+
+
+def _ck_sum_product(p, raw):
+    var = sp.Symbol(str(p.get("variable", "n"))); e = expr(p.get("expression", ""))
+    lo, hi = expr(str(p.get("lower", 1))), expr(str(p.get("upper", 10)))
+    if not (lo.is_Integer and hi.is_Integer) or hi - lo > 3000:
+        return None
+    terms = [e.subs(var, i) for i in range(int(lo), int(hi) + 1)]
+    total = sp.Add(*terms) if p["operation"] == "summation" else sp.Mul(*terms)
+    return sp.simplify(raw - total) == 0
+
+
+def _ck_sequence(p, raw):
+    var = sp.Symbol(str(p.get("variable", "n"))); e = expr(p.get("expression", ""))
+    start, count = int(p.get("start", 1)), int(p.get("terms", 10))
+    return len(raw) == count and all(
+        abs(complex(sp.N(e.subs(var, start + i)) - sp.N(raw[i]))) < 1e-9 for i in range(count))
+
+
+def _ck_inequality(p, raw):
+    text = str(p.get("expression", "")); var = sp.Symbol(str(p.get("variable", "x")))
+    m = re.search(r"(<=|>=|<|>|!=)", text)
+    rel = {"<": sp.Lt, "<=": sp.Le, ">": sp.Gt, ">=": sp.Ge, "!=": sp.Ne}[m.group(1)](
+        expr(text[:m.start()]), expr(text[m.end():]))
+    points = {sp.Rational(k, 4) for k in range(-80, 81)}
+    try:
+        for q in raw.boundary:
+            if q.is_real:
+                points |= {q, q + sp.Rational(1, 1000), q - sp.Rational(1, 1000)}
+    except Exception:
+        pass
+    for x in points:
+        truth = rel.subs(var, x)
+        if truth not in (sp.true, sp.false):
+            return None
+        if bool(x in raw) != bool(truth):
+            return False
+    return True
+
+
+_INDEP: dict[tuple[str, str], Any] = {
+    **{("combinatorics", o): _ck_combinatorics for o in ("permutations", "combinations", "factorial", "binomial")},
+    ("number_theory", "is_prime"): _ck_is_prime, ("number_theory", "modular"): _ck_modular,
+    ("number_theory", "gcd"): _ck_gcd_lcm, ("number_theory", "lcm"): _ck_gcd_lcm,
+    ("number_theory", "prime_factors"): _ck_prime_factors,
+    **{("statistics", o): _ck_statistics for o in ("mean", "median", "mode", "variance", "standard_deviation")},
+    ("geometry", "distance"): _ck_geometry, ("geometry", "midpoint"): _ck_geometry,
+    **{("vector", o): _ck_vector for o in ("dot", "angle")},
+    **{("probability", o): _ck_probability for o in ("expected_value", "probability", "covariance", "correlation")},
+    **{("matrix", o): _ck_matrix for o in ("add", "subtract", "multiply", "determinant", "transpose",
+                                           "rank", "eigenvalues", "rref")},
+    ("calculus", "limit"): _ck_limit, ("calculus", "higher_derivative"): _ck_higher_derivative,
+    ("calculus", "series"): _ck_series,
+    ("discrete", "summation"): _ck_sum_product, ("discrete", "product"): _ck_sum_product,
+    ("discrete", "sequence"): _ck_sequence, ("equation", "inequality"): _ck_inequality,
+}
+# Operations whose built-in check is hollow and that have no cheap independent check.
+_HOLLOW = {("calculus", "laplace"), ("calculus", "inverse_laplace"), ("calculus", "fourier_transform"),
+           ("calculus", "numerical_integral"), ("discrete", "recurrence")}
+
+
+def _set_verification(packed: dict, value: bool | None, label: str | None = None) -> dict:
+    label = label or ("PASSED (independent recomputation)" if value else
+                      "NOT CONFIRMED (independent check disagrees)" if value is not None else "NOT CHECKED")
+    packed["verification"] = value
+    packed["success"] = value is not False
+    line = f"**Verification:** {label}"
+    packed["response"] = (re.sub(r"\*\*Verification:\*\*[^\n]*\s*$", line, packed["response"])
+                          if "**Verification:**" in packed["response"] else packed["response"] + "\n\n" + line)
+    return packed
+
+
+def _apply_independent_check(p: dict, packed: dict) -> dict:
+    key = (p.get("category"), p.get("operation"))
+    check = _INDEP.get(key)
+    if check is None and key not in _HOLLOW:
+        return packed  # this operation's own verification is genuine
+    outcome = None
+    raw = getattr(_LOCAL, "raw", None)
+    if check is not None and raw is not None:
+        try:
+            outcome = check(p, raw)
+        except Exception:  # noqa: BLE001 - an undecidable check means "not checked"
+            logger.debug("independent check failed for %s", key, exc_info=True)
+    if outcome is _KEEP:
+        return packed
+    return _set_verification(packed, outcome if outcome is None else bool(outcome))
+
+
 def execute(p: dict) -> dict:
+    """Run a planned operation, then independently verify the result."""
+    _LOCAL.raw = None
+    packed = _execute_raw(p)
+    if isinstance(packed, dict) and packed.get("operation") and "verification" in packed:
+        packed = _apply_independent_check(p, packed)
+    return packed
+
+
+def _llm_verify_fastpath(question: str, packed: dict) -> dict:
+    """Verify results that have no cheap independent check with the SymPy-backed verifier."""
+    if (packed.get("verification") is not None or not packed.get("operation")
+            or not reasoning_agent.reasoning_available() or not reasoning_agent.VERIFY_ENABLED):
+        return packed
+    body = re.sub(r"\*\*Verification:\*\*.*$", "", packed["response"], flags=re.S).strip()[:1800]
+    verdict = reasoning_agent.verify_solution(question, f"{packed['operation']}: {body}")
+    if verdict["verdict"] == "correct":
+        return _set_verification(packed, True, "PASSED (independently checked with SymPy)")
+    if verdict["verdict"] == "incorrect":
+        return _set_verification(packed, False,
+                                 f"NOT CONFIRMED (an independent check disagrees: {verdict['evidence'][:200]})")
+    return packed
+
+
+
+def _execute_raw(p: dict) -> dict:
     """Execute a planned operation and return operation-specific teaching steps."""
     category, operation = p.get("category"), p.get("operation")
     if (category, operation) not in OPS:
@@ -1418,7 +1753,7 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
     try:
         planned = plan(clean_text, history)
         if (planned.get("category"), planned.get("operation")) in OPS:
-            return execute(planned)
+            return _llm_verify_fastpath(clean_text, execute(planned))
 
         # A short problem the single-operation planner can't express (areas, loci,
         # word problems...) also goes to the reasoning agent.
@@ -1435,6 +1770,10 @@ def answer_math(text: str, history: list[dict] | None = None) -> dict:
         }
     except (ValueError, TypeError, SyntaxError, sp.SympifyError,
             ZeroDivisionError, OverflowError) as error:
+        if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
+            deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup)
+            if deep.get("success"):
+                return deep
         return {
             "success": False, "operation": None, "result": None, "steps": [],
             "verification": None, "response": f"I couldn't process that request: {error}",

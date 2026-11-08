@@ -1,5 +1,82 @@
-
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@600;700;800&display=swap');
+
+/* ------------------------------------------------------------------ */
+/* Theme: follows the device (prefers-color-scheme). Light is default. */
+/* ------------------------------------------------------------------ */
+
+:root {
+    color-scheme: light dark;
+
+    --bg: #f5f6fa;
+    --text: #1d2030;
+    --text-strong: #0f1220;
+    --muted: #4f5565;
+    --muted-2: #5d6373;
+    --muted-3: #7a8091;
+    --side-bg: #ffffff;
+    --side-border: #e3e5ec;
+    --header-border: #e6e8ef;
+    --border: #d5d8e2;
+    --border-soft: #dfe2ea;
+    --surface-2: #f0f1f7;
+    --hover: #eceef5;
+    --card: #ffffff;
+    --chip: #eceef6;
+    --user-bubble: #e9ecf8;
+    --user-border: #d3d9ee;
+    --avatar-bg: #ebe8ff;
+    --accent: #6d66e0;
+    --accent-text: #5b4fd6;
+    --accent-border: #7a6cf0;
+    --compose-bg: #ffffff;
+    --compose-border: #d0d4e0;
+    --send-off-bg: #dfe1ea;
+    --send-off-text: #9aa0ae;
+    --error: #c0392b;
+    --error-bg: #fdecea;
+    --md-strong: #0f1220;
+    --md-em: #3b4152;
+    --md-quote: #4a5163;
+    --shadow: #0002;
+    --grad-a: #8b78ff;
+    --grad-b: #5e5ce6;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #111318;
+        --text: #e8e9ef;
+        --text-strong: #ffffff;
+        --muted: #adb1bd;
+        --muted-2: #989daa;
+        --muted-3: #7d8390;
+        --side-bg: #171920;
+        --side-border: #292c34;
+        --header-border: #252830;
+        --border: #363945;
+        --border-soft: #30333d;
+        --surface-2: #242731;
+        --hover: #292c35;
+        --card: #191c23;
+        --chip: #252832;
+        --user-bubble: #252a35;
+        --user-border: #343a48;
+        --avatar-bg: #29263f;
+        --accent: #7770e8;
+        --accent-text: #a99aff;
+        --accent-border: #8170f5;
+        --compose-bg: #1c1f27;
+        --compose-border: #363a46;
+        --send-off-bg: #343743;
+        --send-off-text: #777777;
+        --error: #f0a99d;
+        --error-bg: #3a2220;
+        --md-strong: #f4f4f8;
+        --md-em: #c6c9d3;
+        --md-quote: #b7bdca;
+        --shadow: #0008;
+    }
+}
 
 * {
     box-sizing: border-box;
@@ -7,13 +84,14 @@
 
 body {
     margin: 0;
-    background: #111318;
-    color: #e8e9ef;
+    background: var(--bg);
+    color: var(--text);
     font-family: 'DM Sans', sans-serif;
 }
 
 button,
-textarea {
+textarea,
+input {
     font: inherit;
 }
 
@@ -21,19 +99,42 @@ button {
     cursor: pointer;
 }
 
+.spin {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.splash {
+    height: 100vh;
+    display: grid;
+    place-items: center;
+    color: var(--muted-3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                              */
+/* ------------------------------------------------------------------ */
+
 .app {
     height: 100vh;
+    height: 100dvh;
     display: flex;
 }
 
 aside {
     width: 260px;
-    background: #171920;
-    border-right: 1px solid #292c34;
+    background: var(--side-bg);
+    border-right: 1px solid var(--side-border);
     padding: 16px 12px;
     display: flex;
     flex-direction: column;
     flex-shrink: 0;
+    min-height: 0;
 }
 
 .brand {
@@ -45,14 +146,14 @@ aside {
 }
 
 .brand svg {
-    color: #a89aff;
+    color: var(--accent-text);
 }
 
 .brand button {
     margin-left: auto;
     background: none;
     border: 0;
-    color: #999;
+    color: var(--muted-3);
     font-size: 22px;
 }
 
@@ -60,10 +161,10 @@ aside {
     display: flex;
     gap: 9px;
     align-items: center;
-    background: #242731;
-    border: 1px solid #363945;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
     border-radius: 10px;
-    color: #eee;
+    color: var(--text-strong);
     padding: 11px;
 }
 
@@ -74,8 +175,14 @@ aside {
 aside small {
     font-size: 10px;
     letter-spacing: 1px;
-    color: #777e8c;
+    color: var(--muted-3);
     padding: 22px 8px 8px;
+}
+
+.chat-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 .chat {
@@ -84,15 +191,19 @@ aside small {
     gap: 8px;
     padding: 10px;
     border-radius: 8px;
-    color: #adb1bd;
+    color: var(--muted);
     font-size: 13px;
     cursor: pointer;
 }
 
+.chat svg {
+    flex-shrink: 0;
+}
+
 .chat.active,
 .chat:hover {
-    background: #292c35;
-    color: #fff;
+    background: var(--hover);
+    color: var(--text-strong);
 }
 
 .chat span {
@@ -106,7 +217,7 @@ aside small {
     opacity: 0;
     background: none;
     border: 0;
-    color: #9da2af;
+    color: var(--muted-3);
 }
 
 .chat:hover button {
@@ -114,10 +225,58 @@ aside small {
 }
 
 footer {
-    margin-top: auto;
-    padding: 10px;
-    color: #7d8390;
+    margin-top: 8px;
+    padding: 10px 6px 0;
+    border-top: 1px solid var(--side-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--muted-3);
     font-size: 12px;
+}
+
+.who {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    flex: 1;
+}
+
+.who-avatar {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    background: var(--avatar-bg);
+    color: var(--accent-text);
+    display: grid;
+    place-items: center;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.who-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+}
+
+.signout {
+    background: none;
+    border: 0;
+    color: var(--muted-3);
+    padding: 6px;
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+}
+
+.signout:hover {
+    background: var(--hover);
+    color: var(--text-strong);
 }
 
 main {
@@ -130,7 +289,8 @@ main {
 
 header {
     height: 58px;
-    border-bottom: 1px solid #252830;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--header-border);
     display: flex;
     align-items: center;
     gap: 9px;
@@ -139,14 +299,14 @@ header {
 }
 
 header svg {
-    color: #a99aff;
+    color: var(--accent-text);
     width: 17px;
 }
 
 header span {
     font-size: 11px;
-    background: #252832;
-    color: #aeb2bd;
+    background: var(--chip);
+    color: var(--muted-2);
     padding: 4px 7px;
     border-radius: 6px;
     font-weight: 400;
@@ -171,7 +331,8 @@ header span {
     width: 52px;
     height: 52px;
     border-radius: 16px;
-    background: linear-gradient(135deg, #8b78ff, #5e5ce6);
+    background: linear-gradient(135deg, var(--grad-a), var(--grad-b));
+    color: #fff;
     display: grid;
     place-items: center;
 }
@@ -183,7 +344,7 @@ header span {
 }
 
 .welcome p {
-    color: #989daa;
+    color: var(--muted-2);
 }
 
 .examples {
@@ -195,9 +356,9 @@ header span {
 }
 
 .examples button {
-    background: #191c23;
-    border: 1px solid #30333d;
-    color: #c9cbd4;
+    background: var(--card);
+    border: 1px solid var(--border-soft);
+    color: var(--muted);
     text-align: left;
     padding: 14px;
     border-radius: 12px;
@@ -205,7 +366,7 @@ header span {
 }
 
 .examples button:hover {
-    background: #242832;
+    background: var(--surface-2);
 }
 
 .feed article {
@@ -227,19 +388,20 @@ header span {
 }
 
 .user .bubble {
-    background: #252a35;
-    border: 1px solid #343a48;
+    background: var(--user-bubble);
+    border: 1px solid var(--user-border);
     padding: 12px 16px;
     border-radius: 15px 15px 4px 15px;
     max-width: 80%;
+    white-space: pre-wrap;
 }
 
 .avatar {
     width: 30px;
     height: 30px;
     flex-shrink: 0;
-    background: #29263f;
-    color: #b4a5ff;
+    background: var(--avatar-bg);
+    color: var(--accent-text);
     border-radius: 10px;
     display: grid;
     place-items: center;
@@ -249,10 +411,12 @@ header span {
     width: 16px;
 }
 
-/* Markdown formatting */
+/* ------------------------------------------------------------------ */
+/* Markdown + math                                                     */
+/* ------------------------------------------------------------------ */
 
 .markdown-content {
-    line-height: 1.7;
+    line-height: 2.2;
     overflow-wrap: anywhere;
 }
 
@@ -262,6 +426,13 @@ header span {
 
 .markdown-content p:last-child {
     margin-bottom: 0;
+}
+
+.markdown-content p,
+.markdown-content li {
+    line-height: 2.4;
+    padding-top: 0.12em;
+    padding-bottom: 0.12em;
 }
 
 .markdown-content h1,
@@ -292,29 +463,29 @@ header span {
 }
 
 .markdown-content li {
-    margin-bottom: 6px;
+    margin-bottom: 0.7em;
 }
 
 .markdown-content strong {
     font-weight: 700;
-    color: #f4f4f8;
+    color: var(--md-strong);
 }
 
 .markdown-content em {
-    color: #c6c9d3;
+    color: var(--md-em);
 }
 
 .markdown-content code {
     font-family: Consolas, monospace;
-    background: #252832;
+    background: var(--chip);
     padding: 2px 5px;
     border-radius: 4px;
     font-size: 0.9em;
 }
 
 .markdown-content pre {
-    background: #191c23;
-    border: 1px solid #30333d;
+    background: var(--card);
+    border: 1px solid var(--border-soft);
     padding: 12px;
     border-radius: 8px;
     overflow-x: auto;
@@ -326,10 +497,10 @@ header span {
 }
 
 .markdown-content blockquote {
-    border-left: 3px solid #8170f5;
+    border-left: 3px solid var(--accent-border);
     padding-left: 12px;
     margin: 12px 0;
-    color: #b7bdca;
+    color: var(--md-quote);
 }
 
 .markdown-content table {
@@ -341,13 +512,65 @@ header span {
 
 .markdown-content th,
 .markdown-content td {
-    border: 1px solid #363945;
+    border: 1px solid var(--border);
     padding: 8px 12px;
     text-align: left;
 }
 
 .markdown-content a {
-    color: #a99aff;
+    color: var(--accent-text);
+}
+
+/* KaTeX: the global border-box rule distorts fraction layout, so undo it inside formulas. */
+.markdown-content .katex,
+.markdown-content .katex *,
+.markdown-content .katex *::before,
+.markdown-content .katex *::after {
+    box-sizing: content-box !important;
+}
+
+.markdown-content .katex {
+    font-size: 1.08em !important;
+    line-height: normal !important;
+    vertical-align: baseline;
+}
+
+.markdown-content .katex .mord,
+.markdown-content .katex .mrel,
+.markdown-content .katex .mbin {
+    color: inherit;
+    line-height: normal !important;
+}
+
+.markdown-content .katex .mfrac {
+    margin: 0 0.08em;
+    line-height: normal !important;
+}
+
+.markdown-content .katex .msupsub {
+    line-height: normal !important;
+}
+
+.markdown-content .katex .mfrac .frac-line {
+    min-height: 0.04em;
+}
+
+.markdown-content li .katex,
+.markdown-content p .katex {
+    display: inline;
+}
+
+.markdown-content .katex-display {
+    line-height: normal !important;
+    margin: 1.25em 0;
+    padding: 0.35em 0.5em;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
+.markdown-content .katex-display > .katex {
+    white-space: nowrap;
 }
 
 .copy {
@@ -356,70 +579,154 @@ header span {
     align-items: center;
     background: none;
     border: 0;
-    color: #858b98;
+    color: var(--muted-3);
     font-size: 11px;
     margin-top: 8px;
 }
+
+/* ------------------------------------------------------------------ */
+/* Composer (auto-growing input + attachments)                         */
+/* ------------------------------------------------------------------ */
 
 .compose {
     width: min(850px, 100%);
     margin: 0 auto;
     padding: 10px 24px 18px;
+    flex-shrink: 0;
+}
+
+.compose.dragging form {
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
 .compose form {
     display: flex;
     align-items: flex-end;
-    gap: 10px;
-    background: #1c1f27;
-    border: 1px solid #363a46;
+    gap: 8px;
+    background: var(--compose-bg);
+    border: 1px solid var(--compose-border);
     border-radius: 16px;
-    padding: 10px 12px 10px 16px;
+    padding: 10px 12px 10px 10px;
 }
 
 .compose textarea {
     resize: none;
-    max-height: 160px;
     min-height: 28px;
+    max-height: 220px;
+    overflow-y: auto;
     flex: 1;
     background: none;
     border: 0;
     outline: 0;
-    color: #eee;
+    color: var(--text-strong);
     line-height: 1.6;
+    padding: 0 4px;
 }
 
-.compose form button {
+.compose textarea::placeholder {
+    color: var(--muted-3);
+}
+
+.compose .send,
+.compose .icon {
     width: 34px;
     height: 34px;
+    flex-shrink: 0;
     border: 0;
     border-radius: 10px;
-    background: #7770e8;
-    color: white;
     display: grid;
     place-items: center;
 }
 
-.compose form button:disabled {
-    background: #343743;
-    color: #777;
+.compose .send {
+    background: var(--accent);
+    color: #fff;
 }
 
-.compose form button svg {
-    width: 17px;
+.compose .send:disabled {
+    background: var(--send-off-bg);
+    color: var(--send-off-text);
+    cursor: not-allowed;
+}
+
+.compose .icon {
+    background: none;
+    color: var(--muted-2);
+}
+
+.compose .icon:hover {
+    background: var(--hover);
+    color: var(--text-strong);
+}
+
+.compose .send svg,
+.compose .icon svg {
+    width: 18px;
+    height: 18px;
 }
 
 .compose small {
     display: block;
     text-align: center;
-    color: #656b78;
+    color: var(--muted-3);
     font-size: 10px;
     margin-top: 10px;
 }
 
-.error {
-    color: #f0a99d;
+.chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    max-width: 100%;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: var(--chip);
+    color: var(--muted);
     font-size: 12px;
+}
+
+.chip span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.chip.error {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.chip button {
+    background: none;
+    border: 0;
+    color: inherit;
+    padding: 0;
+    display: grid;
+    place-items: center;
+}
+
+.hint {
+    margin: 0 0 8px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    background: var(--chip);
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.error {
+    color: var(--error);
+    font-size: 12px;
+    margin: 0 0 8px;
 }
 
 .menu {
@@ -428,7 +735,167 @@ header span {
     left: 10px;
     background: none;
     border: 0;
-    color: #aaa;
+    color: var(--muted-3);
+}
+
+/* ------------------------------------------------------------------ */
+/* Sign in / create account                                            */
+/* ------------------------------------------------------------------ */
+
+.auth {
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+}
+
+.auth-card {
+    width: min(400px, 100%);
+    background: var(--side-bg);
+    border: 1px solid var(--side-border);
+    border-radius: 20px;
+    padding: 32px 28px;
+    box-shadow: 0 18px 50px var(--shadow);
+}
+
+.auth-card .mark {
+    margin-bottom: 16px;
+}
+
+.auth-card h1 {
+    font: 800 24px Manrope, sans-serif;
+    text-align: center;
+    margin: 0 0 6px;
+    letter-spacing: -0.5px;
+}
+
+.auth-card .sub {
+    text-align: center;
+    color: var(--muted-2);
+    font-size: 13px;
+    margin: 0 0 22px;
+}
+
+.tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    background: var(--surface-2);
+    border-radius: 12px;
+    padding: 4px;
+    margin-bottom: 20px;
+}
+
+.tabs button {
+    border: 0;
+    background: none;
+    color: var(--muted-2);
+    padding: 9px;
+    border-radius: 9px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.tabs button.on {
+    background: var(--card);
+    color: var(--text-strong);
+    box-shadow: 0 1px 4px var(--shadow);
+}
+
+.field {
+    display: block;
+    margin-bottom: 14px;
+}
+
+.field > span {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 6px;
+}
+
+.input-wrap {
+    position: relative;
+}
+
+.field input {
+    width: 100%;
+    background: var(--compose-bg);
+    border: 1px solid var(--compose-border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    color: var(--text-strong);
+    outline: 0;
+    font-size: 14px;
+}
+
+.field input:focus {
+    border-color: var(--accent-border);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.input-wrap input {
+    padding-right: 44px;
+}
+
+.input-wrap button {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: 0;
+    color: var(--muted-3);
+    padding: 6px;
+    display: grid;
+    place-items: center;
+}
+
+.auth-error,
+.auth-notice {
+    font-size: 13px;
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin: 0 0 14px;
+    line-height: 1.5;
+}
+
+.auth-error {
+    background: var(--error-bg);
+    color: var(--error);
+}
+
+.auth-notice {
+    background: var(--chip);
+    color: var(--muted);
+}
+
+.primary {
+    width: 100%;
+    border: 0;
+    border-radius: 12px;
+    background: var(--accent);
+    color: #fff;
+    padding: 12px;
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.primary:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+}
+
+.auth-card .fine {
+    text-align: center;
+    color: var(--muted-3);
+    font-size: 11px;
+    margin: 16px 0 0;
 }
 
 @media (max-width: 700px) {
@@ -436,7 +903,7 @@ header span {
         position: absolute;
         z-index: 5;
         height: 100%;
-        box-shadow: 10px 0 35px #0008;
+        box-shadow: 10px 0 35px var(--shadow);
     }
 
     .feed {
@@ -458,144 +925,15 @@ header span {
     header {
         padding-left: 48px;
     }
-}
 
+    .markdown-content p,
+    .markdown-content li {
+        line-height: 2.2;
+    }
 
-/* Math rendering (KaTeX) */
-.markdown-content .katex {
-    font-size: 1.08em;
-}
-
-.markdown-content .katex-display {
-    margin: 16px 0;
-    padding: 12px 8px;
-    overflow-x: auto;
-    overflow-y: hidden;
-}
-
-.markdown-content .katex-display > .katex {
-    white-space: nowrap;
-}
-
-.markdown-content .katex .mord,
-.markdown-content .katex .mrel,
-.markdown-content .katex .mbin {
-    color: inherit;
-}
-
-@media (max-width: 700px) {
     .markdown-content .katex-display {
         text-align: left;
         margin: 12px 0;
         padding: 10px 0;
     }
-}
-
-
-/* Final KaTeX spacing fix: keep inline formulas inside their text line boxes. */
-.markdown-content {
-    line-height: 2;
-}
-
-.markdown-content p,
-.markdown-content li {
-    line-height: 2.15;
-}
-
-.markdown-content .katex {
-    font-size: 1em;
-    line-height: 1.25;
-    vertical-align: -0.08em;
-}
-
-.markdown-content .katex-display {
-    line-height: 1.4;
-    margin: 1.25em 0;
-    padding: 0.35em 0.5em;
-    overflow-x: auto;
-    overflow-y: hidden;
-}
-
-.markdown-content .katex-display > .katex {
-    white-space: nowrap;
-}
-
-.markdown-content li .katex,
-.markdown-content p .katex {
-    display: inline;
-}
-
-@media (max-width: 700px) {
-    .markdown-content p,
-    .markdown-content li {
-        line-height: 2.2;
-    }
-}
-
-
-/* Stronger inline-math spacing override */
-.markdown-content {
-    line-height: 2.2 !important;
-}
-
-.markdown-content p,
-.markdown-content li {
-    line-height: 2.4 !important;
-    padding-top: 0.12em;
-    padding-bottom: 0.12em;
-}
-
-.markdown-content .katex {
-    font-size: 1.15em !important;
-    line-height: 1.6 !important;
-    vertical-align: baseline;
-}
-
-.markdown-content .katex .mfrac {
-    margin: 0 0.08em;
-}
-
-.markdown-content .katex .mfrac .frac-line {
-    min-height: 0.04em;
-}
-
-.markdown-content .katex-display {
-    line-height: 1.8 !important;
-    max-width: 100%;
-    overflow-x: auto;
-    overflow-y: visible;
-}
-
-.markdown-content li {
-    margin-bottom: 0.7em !important;
-}
-
-
-/* Fix KaTeX internal sizing: global border-box can distort fraction layout */
-.markdown-content .katex,
-.markdown-content .katex *,
-.markdown-content .katex *::before,
-.markdown-content .katex *::after {
-    box-sizing: content-box !important;
-}
-
-/* Let KaTeX control its own math metrics and baseline */
-.markdown-content .katex {
-    line-height: normal !important;
-    font-size: 1.08em !important;
-    vertical-align: baseline;
-}
-
-.markdown-content .katex .mfrac,
-.markdown-content .katex .msupsub,
-.markdown-content .katex .mord,
-.markdown-content .katex .mrel,
-.markdown-content .katex .mbin {
-    line-height: normal !important;
-}
-
-.markdown-content .katex-display {
-    line-height: normal !important;
-    overflow-x: auto;
-    overflow-y: visible;
 }
