@@ -27,6 +27,7 @@ app = FastAPI(title="Mathematical AI Reasoning Agent")
 cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 limiter = auth.RateLimiter()
+HEARTBEAT_SECONDS = 15  # proxies (Render/Cloudflare) close connections that stay silent for ~100s
 
 
 def ts() -> str:
@@ -257,7 +258,11 @@ def chat(p: Chat, user: dict = Depends(current_user)):
    logger.exception("answer_math failed")
    err_result = {"success": False, "operation": None, "result": None, "steps": [],
                  "verification": None, "response": f"I couldn't process that: {e}", "error": str(e)}
-   save(cid, "assistant", err_result["response"], err_result)
+   try:
+    save(cid, "assistant", err_result["response"], err_result)
+   except Exception:
+    logger.exception("could not save the error message")
+   # Always end the stream, even if saving failed, or the browser would wait forever.
    q.put({"type": "result", "data": {"conversation_id": cid, **err_result}})
 
  def event_generator():
@@ -265,8 +270,16 @@ def chat(p: Chat, user: dict = Depends(current_user)):
   thread.start()
 
   while True:
-   item = q.get()
-   yield f"data: {json.dumps(item)}\n\n"
+   try:
+    item = q.get(timeout=HEARTBEAT_SECONDS)
+   except queue.Empty:
+    if thread.is_alive():
+     yield ": keep-alive\n\n"  # SSE comment: ignored by the client, keeps the connection open
+     continue
+    item = {"type": "result", "data": {"conversation_id": cid, "success": False, "operation": None,
+                                       "result": None, "steps": [], "verification": None,
+                                       "response": "The request ended unexpectedly. Please try again.", "error": "worker stopped"}}
+   yield f"data: {json.dumps(item, default=str)}\n\n"
    if item["type"] == "result":
     break
 
