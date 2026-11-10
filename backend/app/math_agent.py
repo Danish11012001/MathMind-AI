@@ -34,10 +34,9 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").strip().lower()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/api/generate")
 OLLAMA_TIMEOUT = (2, 18)
-NARAROUTER_API_KEY = os.getenv("NARAROUTER_API_KEY")
-NARAROUTER_MODEL = os.getenv("NARAROUTER_MODEL", "agnes-2.5-flash")
-NARAROUTER_BASE_URL = os.getenv("NARAROUTER_BASE_URL", "https://router.bynara.id/v1").rstrip("/")
-NARAROUTER_URL = f"{NARAROUTER_BASE_URL}/chat/completions"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 TRANSFORMATIONS = standard_transformations + (
     convert_xor,
@@ -466,14 +465,14 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
     )
     prompt = f"{schema}\nRecent context: {context}\nUser request: {text}"
     try:
-        if LLM_PROVIDER == "nararouter":
-            if not NARAROUTER_API_KEY:
-                raise RuntimeError("NARAROUTER_API_KEY is not configured")
+        if LLM_PROVIDER == "groq":
+            if not GROQ_API_KEY:
+                raise RuntimeError("GROQ_API_KEY is not configured")
             response = requests.post(
-                NARAROUTER_URL,
-                headers={"Authorization": f"Bearer {NARAROUTER_API_KEY}", "Content-Type": "application/json"},
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
                 json={
-                    "model": NARAROUTER_MODEL,
+                    "model": GROQ_MODEL,
                     "messages":[
                         {"role":"system", "content":"You are a mathematical task planner. Output valid JSON only."},
                         {"role":"user", "content":prompt},
@@ -498,7 +497,7 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
             response.raise_for_status()
             content = response.json().get("response", "{}")
         else:
-            raise ValueError("LLM_PROVIDER must be 'nararouter' or 'ollama'.")
+            raise ValueError("LLM_PROVIDER must be 'groq' or 'ollama'.")
 
         parsed = json.loads(content)
         if isinstance(parsed, dict) and (parsed.get("category"), parsed.get("operation")) in OPS:
@@ -1535,14 +1534,14 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
         "Write the complete response now."
     )
     try:
-        if LLM_PROVIDER == "nararouter":
-            if not NARAROUTER_API_KEY:
-                raise RuntimeError("NARAROUTER_API_KEY is not configured")
+        if LLM_PROVIDER == "groq":
+            if not GROQ_API_KEY:
+                raise RuntimeError("GROQ_API_KEY is not configured")
             response = requests.post(
-                NARAROUTER_URL,
-                headers={"Authorization": f"Bearer {NARAROUTER_API_KEY}", "Content-Type": "application/json"},
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
                 json={
-                    "model": NARAROUTER_MODEL,
+                    "model": GROQ_MODEL,
                     "messages":[
                         {"role":"system", "content":"You are MathMind, a friendly math assistant. Follow the user's request completely."},
                         {"role":"user", "content":prompt},
@@ -1569,12 +1568,12 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
         logger.exception(
             "Conversational model request failed (provider=%s, model=%s)",
             LLM_PROVIDER,
-            NARAROUTER_MODEL if LLM_PROVIDER == "nararouter" else OLLAMA_MODEL,
+            GROQ_MODEL if LLM_PROVIDER == "groq" else OLLAMA_MODEL,
         )
     return (
         "I received your follow-up and can see the conversation history, but the "
         "conversational model is currently unavailable. On Render, configure "
-        "LLM_PROVIDER=nararouter with a valid NARAROUTER_API_KEY (and optionally NARAROUTER_MODEL), "
+        "LLM_PROVIDER=groq with a valid GROQ_API_KEY (and optionally GROQ_MODEL), "
         "or point OLLAMA_URL to a reachable hosted Ollama instance. "
         "Your deterministic SymPy calculations are still available."
     )

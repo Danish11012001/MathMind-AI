@@ -20,9 +20,9 @@ from sympy.parsing.sympy_parser import (
 
 logger = logging.getLogger(__name__)
 
-NARAROUTER_BASE_URL = os.getenv("NARAROUTER_BASE_URL", "https://router.bynara.id/v1").rstrip("/")
-NARAROUTER_URL = f"{NARAROUTER_BASE_URL}/chat/completions"
-REASONING_MODEL = os.getenv("NARAROUTER_MODEL", "agnes-2.5-flash")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+REASONING_MODEL = os.getenv("GROQ_REASONING_MODEL", "openai/gpt-oss-120b")
+REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "high").strip().lower()
 MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "12"))
 SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
 DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
@@ -33,8 +33,8 @@ MAX_TOOL_OUTPUT = 4000
 
 def reasoning_available() -> bool:
     return (
-            os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "nararouter"
-            and bool(os.getenv("NARAROUTER_API_KEY"))
+            os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "groq"
+            and bool(os.getenv("GROQ_API_KEY"))
     )
 
 _FOLLOWUP = re.compile(
@@ -375,9 +375,9 @@ def _chat(messages: list[dict], model: str, temperature: float) -> dict:
     }
     if "gpt-oss" in model and REASONING_EFFORT in {"low", "medium", "high"}:
         payload["reasoning_effort"] = REASONING_EFFORT
-    headers = {"Authorization": f"Bearer {os.getenv('NARAROUTER_API_KEY')}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}", "Content-Type": "application/json"}
     for attempt in range(2):
-        response = requests.post(NARAROUTER_URL, headers=headers, json=payload, timeout=(5, 70))
+        response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(5, 70))
         if response.status_code == 400 and "reasoning_effort" in payload and attempt == 0:
             payload.pop("reasoning_effort")
             continue
@@ -464,8 +464,8 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
                                                 "in exactly the format requested."})
     payload = {"model": REASONING_MODEL, "messages": messages, "temperature": temperature,
                "max_completion_tokens": 4000}
-    response = requests.post(NARAROUTER_URL, json=payload, timeout=(5, 60),
-                             headers={"Authorization": f"Bearer {os.getenv('NARAROUTER_API_KEY')}"})
+    response = requests.post(GROQ_URL, json=payload, timeout=(5, 60),
+                             headers={"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}"})
     if response.status_code >= 400:
         raise AgentError("The solver ran out of steps before finishing.")
     content = (response.json()["choices"][0]["message"].get("content") or "").strip()
