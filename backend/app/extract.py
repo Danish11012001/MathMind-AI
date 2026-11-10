@@ -2,7 +2,7 @@
 
 The extracted text is returned to the user to review and edit before it is sent,
 then flows through the normal solve-and-verify pipeline. Reading images needs a
-Groq vision model (LLM_PROVIDER=groq and GROQ_API_KEY). Plain text, .docx and PDFs
+Groq vision model (OCR_PROVIDER=groq and GROQ_API_KEY). Plain text, .docx and PDFs
 with a text layer work without any AI call.
 
 Environment variables:
@@ -55,7 +55,9 @@ class ExtractError(Exception):
 
 
 def vision_available() -> bool:
-    return os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "groq" and bool(os.getenv("GROQ_API_KEY"))
+    """OCR availability is independent of the text/reasoning LLM provider."""
+    ocr_provider = os.getenv("OCR_PROVIDER", "groq").strip().lower()
+    return ocr_provider == "groq" and bool(os.getenv("GROQ_API_KEY"))
 
 
 # --------------------------------------------------------------------------- #
@@ -103,7 +105,7 @@ def _clean_transcript(text: str) -> str:
 
 def _vision(jpeg: bytes) -> str:
     if not vision_available():
-        raise ExtractError("Reading images needs the Groq provider (set LLM_PROVIDER=groq and GROQ_API_KEY).")
+        raise ExtractError("Reading images needs Groq OCR (set OCR_PROVIDER=groq and GROQ_API_KEY).")
     payload = {
         "model": VISION_MODEL,
         "messages": [{"role": "user", "content": [
@@ -172,7 +174,7 @@ def _extract_pdf(data: bytes) -> tuple[str, list[str]]:
                 if vision_pages >= MAX_VISION_PAGES:
                     notes.append(f"Page {index + 1} was skipped (too many scanned pages).")
                 else:
-                    raise ExtractError("This looks like a scanned PDF. Reading it needs the Groq provider.")
+                    raise ExtractError("This looks like a scanned PDF. Reading it needs Groq OCR (set OCR_PROVIDER=groq and GROQ_API_KEY).")
             else:
                 if mathy:
                     notes.append(f"Page {index + 1}: formulas may be garbled; check them or upload a photo.")
