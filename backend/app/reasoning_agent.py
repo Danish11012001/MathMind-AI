@@ -20,26 +20,21 @@ from sympy.parsing.sympy_parser import (
 
 logger = logging.getLogger(__name__)
 
-# Deep reasoning and independent AI verification use Agnes through NaraRouter.
-NARAROUTER_BASE_URL = os.getenv(
-    "NARAROUTER_BASE_URL", "https://router.bynara.id/v1"
-).rstrip("/")
-NARAROUTER_API_KEY = os.getenv("NARAROUTER_API_KEY")
-REASONING_MODEL = os.getenv("NARAROUTER_MODEL", "agnes-2.5-flash")
+NARAROUTER_BASE_URL = os.getenv("NARAROUTER_BASE_URL", "https://router.bynara.id/v1").rstrip("/")
 NARAROUTER_URL = f"{NARAROUTER_BASE_URL}/chat/completions"
-MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "8"))
+REASONING_MODEL = os.getenv("NARAROUTER_MODEL", "agnes-2.5-flash")
+MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "12"))
 SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
-DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "240"))
+DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
 VERIFY_ENABLED = os.getenv("JEE_VERIFY", "1").strip() != "0"
-MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "1")))
-PROVIDER_TIMEOUT = 120
+MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
 TOOL_TIMEOUT = 12
 MAX_TOOL_OUTPUT = 4000
 
 def reasoning_available() -> bool:
     return (
             os.getenv("LLM_PROVIDER", "ollama").strip().lower() == "nararouter"
-            and bool(NARAROUTER_API_KEY)
+            and bool(os.getenv("NARAROUTER_API_KEY"))
     )
 
 _FOLLOWUP = re.compile(
@@ -373,38 +368,20 @@ class AgentError(RuntimeError):
     pass
 
 
-def _request_timeout(deadline: float) -> tuple[float, float]:
-    """Keep provider requests within the remaining solve-time budget."""
-    remaining = deadline - time.monotonic()
-    if remaining <= 0:
-        raise AgentError("The reasoning time budget has expired.")
-    return min(5.0, remaining), min(float(PROVIDER_TIMEOUT), remaining)
-
-
-def _chat(
-        messages: list[dict],
-        model: str,
-        temperature: float,
-        timeout: tuple[float, float] = (5, PROVIDER_TIMEOUT),
-) -> dict:
-    if not NARAROUTER_API_KEY:
-        raise AgentError("NARAROUTER_API_KEY is not configured")
-
+def _chat(messages: list[dict], model: str, temperature: float) -> dict:
     payload: dict[str, Any] = {
-        "model": model,
-        "messages": messages,
-        "tools": TOOL_SPECS,
-        "tool_choice": "auto",
-        "temperature": temperature,
-        "max_tokens": 8192,
+        "model": model, "messages": messages, "tools": TOOL_SPECS, "tool_choice": "auto",
+        "temperature": temperature, "max_completion_tokens": 8192,
     }
-    headers = {
-        "Authorization": f"Bearer {NARAROUTER_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    response = requests.post(
-        NARAROUTER_URL, headers=headers, json=payload, timeout=timeout
-    )
+    if "gpt-oss" in model and REASONING_EFFORT in {"low", "medium", "high"}:
+        payload["reasoning_effort"] = REASONING_EFFORT
+    headers = {"Authorization": f"Bearer {os.getenv('NARAROUTER_API_KEY')}", "Content-Type": "application/json"}
+    for attempt in range(2):
+        response = requests.post(NARAROUTER_URL, headers=headers, json=payload, timeout=(5, 70))
+        if response.status_code == 400 and "reasoning_effort" in payload and attempt == 0:
+            payload.pop("reasoning_effort")
+            continue
+        break
     if response.status_code == 429:
         raise AgentError("The AI service is rate-limited right now. Please try again in a minute.")
     if response.status_code == 400 and "tool_use_failed" in response.text:
@@ -441,12 +418,7 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
         if time.monotonic() > deadline:
             raise AgentError("This problem took too long to solve. Try breaking it into smaller parts.")
         try:
-            message = _chat(
-                messages,
-                REASONING_MODEL,
-                temperature,
-                timeout=_request_timeout(deadline),
-            )
+            message = _chat(messages, REASONING_MODEL, temperature)
         except ValueError:
             format_errors += 1
             if format_errors > 2:
@@ -490,21 +462,10 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
 
     messages.append({"role": "user", "content": "Stop using tools. Give your final response now, "
                                                 "in exactly the format requested."})
-    payload = {
-        "model": REASONING_MODEL,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": 4000,
-    }
-    response = requests.post(
-        NARAROUTER_URL,
-        json=payload,
-        timeout=_request_timeout(deadline),
-        headers={
-            "Authorization": f"Bearer {NARAROUTER_API_KEY}",
-            "Content-Type": "application/json",
-        },
-    )
+    payload = {"model": REASONING_MODEL, "messages": messages, "temperature": temperature,
+               "max_completion_tokens": 4000}
+    response = requests.post(NARAROUTER_URL, json=payload, timeout=(5, 60),
+                             headers={"Authorization": f"Bearer {os.getenv('NARAROUTER_API_KEY')}"})
     if response.status_code >= 400:
         raise AgentError("The solver ran out of steps before finishing.")
     content = (response.json()["choices"][0]["message"].get("content") or "").strip()
@@ -649,7 +610,7 @@ def solve_hard(question: str, history: list[dict] | None = None,
     evidence = (verdict or {}).get("evidence", "")
     if state == "correct":
         verification = True
-        note = "Verification: PASSED (Agnes review supported by SymPy tool checks)" + (f"\n\n*Check:* {evidence}" if evidence else "")
+        note = "Verification: PASSED (independently checked with SymPy)" + (f"\n\n*Check:* {evidence}" if evidence else "")
     elif state == "incorrect":
         verification = False
         note = f"⚠️ Verification FAILED: {evidence} This answer is probably wrong, so do not rely on it."
