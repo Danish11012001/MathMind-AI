@@ -518,9 +518,9 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0,
-                max_tokens=500,
+                max_tokens=350,
                 response_format={"type": "json_object"},
-                timeout=(5, 45),
+                timeout=(5, 30),
             )
         elif LLM_PROVIDER == "groq":
             if not GROQ_API_KEY:
@@ -554,7 +554,7 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
             response.raise_for_status()
             content = response.json().get("response", "{}")
         else:
-            raise ValueError("LLM_PROVIDER must be 'groq' or 'ollama'.")
+            raise ValueError("LLM_PROVIDER must be 'nararouter', 'groq', or 'ollama'.")
 
         parsed = json.loads(content)
         if isinstance(parsed, dict) and (parsed.get("category"), parsed.get("operation")) in OPS:
@@ -1598,8 +1598,8 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.2,
-                max_tokens=8192,
-                timeout=(5, 120),
+                max_tokens=3500,
+                timeout=(5, 75),
             )
             return _normalize_math_markup(answer)
         if LLM_PROVIDER == "groq":

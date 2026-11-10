@@ -27,11 +27,12 @@ NARAROUTER_BASE_URL = os.getenv(
 NARAROUTER_API_KEY = os.getenv("NARAROUTER_API_KEY")
 REASONING_MODEL = os.getenv("NARAROUTER_MODEL", "agnes-2.5-flash")
 NARAROUTER_URL = f"{NARAROUTER_BASE_URL}/chat/completions"
-MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "12"))
+MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "8"))
 SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
-DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
+DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "240"))
 VERIFY_ENABLED = os.getenv("JEE_VERIFY", "1").strip() != "0"
-MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
+MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "1")))
+PROVIDER_TIMEOUT = 120
 TOOL_TIMEOUT = 12
 MAX_TOOL_OUTPUT = 4000
 
@@ -372,7 +373,20 @@ class AgentError(RuntimeError):
     pass
 
 
-def _chat(messages: list[dict], model: str, temperature: float) -> dict:
+def _request_timeout(deadline: float) -> tuple[float, float]:
+    """Keep provider requests within the remaining solve-time budget."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise AgentError("The reasoning time budget has expired.")
+    return min(5.0, remaining), min(float(PROVIDER_TIMEOUT), remaining)
+
+
+def _chat(
+        messages: list[dict],
+        model: str,
+        temperature: float,
+        timeout: tuple[float, float] = (5, PROVIDER_TIMEOUT),
+) -> dict:
     if not NARAROUTER_API_KEY:
         raise AgentError("NARAROUTER_API_KEY is not configured")
 
@@ -389,7 +403,7 @@ def _chat(messages: list[dict], model: str, temperature: float) -> dict:
         "Content-Type": "application/json",
     }
     response = requests.post(
-        NARAROUTER_URL, headers=headers, json=payload, timeout=(5, 90)
+        NARAROUTER_URL, headers=headers, json=payload, timeout=timeout
     )
     if response.status_code == 429:
         raise AgentError("The AI service is rate-limited right now. Please try again in a minute.")
@@ -427,7 +441,12 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
         if time.monotonic() > deadline:
             raise AgentError("This problem took too long to solve. Try breaking it into smaller parts.")
         try:
-            message = _chat(messages, REASONING_MODEL, temperature)
+            message = _chat(
+                messages,
+                REASONING_MODEL,
+                temperature,
+                timeout=_request_timeout(deadline),
+            )
         except ValueError:
             format_errors += 1
             if format_errors > 2:
@@ -480,7 +499,7 @@ def _agent_loop(system: str, user: str, temperature: float, deadline: float, max
     response = requests.post(
         NARAROUTER_URL,
         json=payload,
-        timeout=(5, 90),
+        timeout=_request_timeout(deadline),
         headers={
             "Authorization": f"Bearer {NARAROUTER_API_KEY}",
             "Content-Type": "application/json",
