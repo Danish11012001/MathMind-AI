@@ -380,32 +380,50 @@ class AgentError(RuntimeError):
     pass
 
 
+_LIMIT_RE = re.compile(r"Limit\s+(\d+),\s*Requested\s+(\d+)", re.I)
+MIN_COMPLETION_TOKENS = 1500
+
+
+def _shrink_for_limit(error_text: str, max_tokens: int) -> int | None:
+    """Groq counts max_completion_tokens against the per-minute token limit. On a 413
+    ("Limit 8000, Requested 10016") return a smaller max_tokens that fits, or None."""
+    m = _LIMIT_RE.search(error_text or "")
+    if not m:
+        return None
+    limit, requested = int(m.group(1)), int(m.group(2))
+    smaller = max_tokens - (requested - limit) - 200
+    return smaller if smaller >= MIN_COMPLETION_TOKENS else None
+
+
 def _chat(messages: list[dict], model: str, temperature: float, use_tools: bool = True,
           effort: str | None = None, max_tokens: int = 8192) -> dict:
     payload: dict[str, Any] = {
         "model": model, "messages": messages,
         "temperature": temperature, "max_completion_tokens": max_tokens,
     }
-<<<<<<< HEAD
-    if "gpt-oss" in model and REASONING_EFFORT in {"low", "medium", "high"}:
-        payload["reasoning_effort"] = REASONING_EFFORT
-=======
     if use_tools:
         payload["tools"] = TOOL_SPECS
         payload["tool_choice"] = "auto"
     effort = (effort or REASONING_EFFORT)
     if "gpt-oss" in model and effort in {"low", "medium", "high"}:
         payload["reasoning_effort"] = effort
->>>>>>> 203b11f (Active Auditor)
     headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}", "Content-Type": "application/json"}
-    for attempt in range(2):
+    for attempt in range(3):
         response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(5, 70))
         if response.status_code == 400 and "reasoning_effort" in payload and attempt == 0:
             payload.pop("reasoning_effort")
             continue
+        if response.status_code == 413 and attempt < 2:
+            smaller = _shrink_for_limit(response.text, payload["max_completion_tokens"])
+            if smaller:
+                payload["max_completion_tokens"] = smaller
+                continue
+            raise AgentError("This question is too large for your Groq plan's per-minute token limit. "
+                             "Shorten it, or upgrade the Groq tier.")
         break
     if response.status_code == 429:
-        raise AgentError("The AI service is rate-limited right now. Please try again in a minute.")
+        raise AgentError("The AI service is rate-limited right now (Groq's per-minute token limit). "
+                         "Please try again in a minute, or set JEE_SAMPLES=1.")
     if response.status_code == 400 and "tool_use_failed" in response.text:
         raise ValueError("tool_use_failed")
     if response.status_code >= 400:
