@@ -18,16 +18,22 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
+try:
+    from . import auditor
+except ImportError:
+    import auditor  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 REASONING_MODEL = os.getenv("GROQ_REASONING_MODEL", "openai/gpt-oss-120b")
 REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "high").strip().lower()
 MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "12"))
-SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
+SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "3")), 3))
 DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
 VERIFY_ENABLED = os.getenv("JEE_VERIFY", "1").strip() != "0"
 MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
+AUDIT_ENABLED = os.getenv("JEE_AUDIT", "1").strip() != "0"
 TOOL_TIMEOUT = 12
 MAX_TOOL_OUTPUT = 4000
 
@@ -78,7 +84,8 @@ _FUNCS: dict[str, Any] = {
     "csc": sp.csc, "asin": sp.asin, "acos": sp.acos, "atan": sp.atan,
     "acot": sp.acot, "atan2": sp.atan2, "sinh": sp.sinh, "cosh": sp.cosh,
     "tanh": sp.tanh, "asinh": sp.asinh, "acosh": sp.acosh, "atanh": sp.atanh,
-    "exp": sp.exp, "log": sp.log, "ln": sp.log, "sqrt": sp.sqrt, "cbrt": sp.cbrt,
+    "exp": sp.exp, "log": sp.log, "ln": sp.log,
+    "log10": lambda v: sp.log(v, 10), "log2": lambda v: sp.log(v, 2), "sqrt": sp.sqrt, "cbrt": sp.cbrt,
     "root": sp.root, "Abs": sp.Abs, "abs": sp.Abs, "floor": sp.floor,
     "ceiling": sp.ceiling, "factorial": sp.factorial, "binomial": sp.binomial,
     "gcd": sp.gcd, "lcm": sp.lcm, "re": sp.re, "im": sp.im,
@@ -106,6 +113,9 @@ def _P(text: Any) -> Any:
         raise ValueError("expression too long")
     s = (s.replace("−", "-").replace("×", "*").replace("÷", "/").replace("π", "pi")
          .replace("²", "**2").replace("³", "**3").replace("√", "sqrt"))
+    # x0, a23 -> x_0, a_23. Without this, implicit-multiplication splitting turns "x0" into x*0
+    # (or fails to parse), so tools silently error on subscripted variables.
+    s = re.sub(r"(?<![A-Za-z_0-9.])([A-Za-z])(\d+)(?![A-Za-z_(\d.])", r"\1_\2", s)
     if _FORBIDDEN.search(s):
         raise ValueError(
             "disallowed characters. Use plain syntax only: * for multiplication, "
@@ -350,6 +360,8 @@ Method:
 3. Do EVERY calculation with the tools (algebra, calculus, matrices, counting, numeric checks). Never do non-trivial arithmetic in your head.
 4. VERIFY before answering: substitute your answer back into the original conditions (substitute), or recompute a different way and compare with check_equal. Check domain restrictions, extraneous roots, signs, and edge cases. If a check fails, fix the solution.
 5. For multiple-choice, test each option rather than guessing.
+6. SANITY-CHECK every derived formula against what the problem implies BEFORE using it: sign (an integral of a positive function over a positive range is positive; lengths, areas and probabilities cannot be negative; a probability is in [0,1]), domain, and size. If a derived formula contradicts such a fact, your setup or algebra is WRONG: find the mistake. Never "match", "approximate" or drop terms to force agreement with a given option or a desired value.
+7. If you cannot reach a rigorous, verified answer, do not guess. Make the last line exactly: FINAL_ANSWER: UNSURE, and explain in the body what you could not establish.
 
 Tool syntax: plain text only. Use * for multiplication, ** or ^ for powers, sqrt(), pi, I (imaginary unit), E (Euler's number), oo (infinity). No LaTeX in tool arguments, no attribute access (x.is_real), no quotes.
 
@@ -368,13 +380,23 @@ class AgentError(RuntimeError):
     pass
 
 
-def _chat(messages: list[dict], model: str, temperature: float) -> dict:
+def _chat(messages: list[dict], model: str, temperature: float, use_tools: bool = True,
+          effort: str | None = None, max_tokens: int = 8192) -> dict:
     payload: dict[str, Any] = {
-        "model": model, "messages": messages, "tools": TOOL_SPECS, "tool_choice": "auto",
-        "temperature": temperature, "max_completion_tokens": 8192,
+        "model": model, "messages": messages,
+        "temperature": temperature, "max_completion_tokens": max_tokens,
     }
+<<<<<<< HEAD
     if "gpt-oss" in model and REASONING_EFFORT in {"low", "medium", "high"}:
         payload["reasoning_effort"] = REASONING_EFFORT
+=======
+    if use_tools:
+        payload["tools"] = TOOL_SPECS
+        payload["tool_choice"] = "auto"
+    effort = (effort or REASONING_EFFORT)
+    if "gpt-oss" in model and effort in {"low", "medium", "high"}:
+        payload["reasoning_effort"] = effort
+>>>>>>> 203b11f (Active Auditor)
     headers = {"Authorization": f"Bearer {os.getenv('GROQ_API_KEY')}", "Content-Type": "application/json"}
     for attempt in range(2):
         response = requests.post(GROQ_URL, headers=headers, json=payload, timeout=(5, 70))
@@ -518,6 +540,56 @@ def verify_solution(question: str, claimed: str, deadline: float | None = None) 
             "corrected": str(data.get("corrected_answer", "") or "").strip()[:200], "tool_calls": ok_calls}
 
 
+AUDIT_PROMPT = """You are a math auditor. You receive a PROBLEM and a SOLUTION. Do NOT solve the problem and do NOT judge the final answer. Extract the checkable claims the SOLUTION relies on, so that a computer algebra system can test them.
+
+Reply with ONLY a JSON object:
+{"claims": [
+  {"kind": "equal", "a": "<expr>", "b": "<expr>", "step": "<short description>"},
+  {"kind": "sign", "expr": "<expr>", "relation": ">0", "domain": {"x": [0.1, 10]}, "step": "<why this must hold>"}
+]}
+
+Rules:
+1. "equal": an algebraic identity the solution asserts, written with plain syntax (* for multiplication, ** or ^ for powers, sqrt(), pi, no LaTeX, no words). It must be unconditionally true for all values of its variables, or fully numeric. If an equality only holds under a condition, substitute the condition first or skip it. Skip approximations, asymptotics, inequalities and anything involving integrals/limits you cannot write as a closed expression.
+2. "sign": a quantity whose sign or range follows from the PROBLEM (an integral of a positive function is positive, a length or probability is non-negative, a value that must be real and positive), written as the formula the SOLUTION derived for that quantity. relation is one of ">0", ">=0", "<0", "<=0", "!=0". "domain" gives numeric [low, high] for each variable, taken from the problem's constraints (e.g. x>0 -> [0.1, 10]).
+3. Include a "sign" claim whenever the solution derives a closed-form for a quantity that the problem forces to be positive or negative. These catch contradictions.
+4. At most 12 claims, most important first. If nothing is checkable, return {"claims": []}."""
+
+
+def _extract_claims(question: str, body: str, deadline: float | None = None) -> list:
+    user = f"PROBLEM:\n{question[:3000]}\n\nSOLUTION:\n{body[:6000]}"
+    try:
+        message = _chat([{"role": "system", "content": AUDIT_PROMPT}, {"role": "user", "content": user}],
+                        REASONING_MODEL, 0.0, use_tools=False, effort="low", max_tokens=3000)
+    except (AgentError, ValueError, requests.RequestException):
+        return []
+    claims = _parse_json(message.get("content") or "").get("claims")
+    return claims if isinstance(claims, list) else []
+
+
+def _tool_check_equal(a: str, b: str) -> str:
+    ok, output = run_tool("check_equal", {"a": a, "b": b})
+    return output if ok else f"ERROR: {output}"
+
+
+def audit_solution(question: str, body: str, answer: str | None, deadline: float | None = None) -> dict:
+    """Audit the solution's reasoning, not just its final answer.
+
+    Returns {"status": "passed" | "failed" | "skipped", "checked": int, "failures": [str]}.
+    "passed" means no contradiction was found among the claims actually checked; it is
+    evidence, not a proof. Extraction/parse problems are skipped, never counted as failures.
+    """
+    failures = auditor.check_option_consistency(question, answer, body, _P)
+    checked = 0
+    if deadline is None or deadline - time.monotonic() > 12:
+        claims = _extract_claims(question, body, deadline)
+        result = auditor.run_claims(claims, _P, _tool_check_equal)
+        failures += result["failures"]
+        checked = result["checked"]
+    if failures:
+        return {"status": "failed", "checked": checked, "failures": failures}
+    return {"status": "passed" if checked else "skipped", "checked": checked, "failures": []}
+
+
 _FINAL = re.compile(r"^\s*\**FINAL_ANSWER\**\s*:\s*(.+?)\s*$", re.I | re.M)
 
 
@@ -532,6 +604,10 @@ def _split_answer(content: str) -> tuple[str, str | None]:
 
 def _norm(answer: str) -> str:
     return re.sub(r"[\s$`*]|\\(?:left|right|displaystyle|boxed)", "", answer.lower())
+
+
+def _is_unsure(answer: str | None) -> bool:
+    return bool(answer) and answer.strip().strip("*` ").upper().startswith("UNSURE")
 
 
 def _same(a: str, b: str) -> bool:
@@ -550,9 +626,9 @@ def _format_answer(answer: str) -> str:
 
 
 def _pick(runs: list[dict]) -> tuple[dict, tuple[int, int] | None]:
-    answered = [r for r in runs if r["answer"]]
+    answered = [r for r in runs if r["answer"] and not _is_unsure(r["answer"])]
     if len(answered) < 2:
-        return runs[0], None
+        return (answered[0] if answered else runs[0]), None
     best = max(answered, key=lambda r: sum(_same(r["answer"], o["answer"]) for o in answered))
     return best, (sum(_same(best["answer"], o["answer"]) for o in answered), len(answered))
 
@@ -565,6 +641,7 @@ def solve_hard(question: str, history: list[dict] | None = None,
     chosen: dict | None = None
     agreement: tuple[int, int] | None = None
     verdict: dict | None = None
+    audit: dict | None = None
     error: AgentError | None = None
     feedback: str | None = None
 
@@ -592,14 +669,31 @@ def solve_hard(question: str, history: list[dict] | None = None,
         if deadline - time.monotonic() < 15:
             verdict = {"verdict": "unavailable", "evidence": "ran out of time", "corrected": ""}
             break
+        if _is_unsure(chosen["answer"]):
+            verdict = {"verdict": "inconclusive", "evidence": "The solver reported it could not establish an answer.",
+                       "corrected": ""}
+            audit = None
+            break
 
         if on_event:
             on_event("status", "Independently verifying the answer...")
-
         verdict = verify_solution(question, chosen["answer"] or chosen["body"][-1200:], deadline)
-        if verdict["verdict"] != "incorrect":
+
+        audit = None
+        if AUDIT_ENABLED:
+            if on_event:
+                on_event("status", "Auditing each solution step...")
+            audit = audit_solution(question, chosen["body"], chosen["answer"], deadline)
+
+        problems: list[str] = []
+        if verdict["verdict"] == "incorrect":
+            problems.append(verdict["evidence"] + (f" The verifier suggests: {verdict['corrected']}."
+                                                   if verdict["corrected"] else ""))
+        if audit and audit["status"] == "failed":
+            problems.extend(f"Step audit: {f}" for f in audit["failures"][:4])
+        if not problems:
             break
-        feedback = verdict["evidence"] + (f" The verifier suggests: {verdict['corrected']}." if verdict["corrected"] else "")
+        feedback = "\n".join(problems)
 
     if chosen is None:
         message = str(error or "The solver failed.")
@@ -608,27 +702,40 @@ def solve_hard(question: str, history: list[dict] | None = None,
 
     state = verdict["verdict"] if verdict else "off"
     evidence = (verdict or {}).get("evidence", "")
-    if state == "correct":
+    audit_failed = bool(audit and audit["status"] == "failed")
+    unsure = _is_unsure(chosen["answer"])
+
+    if unsure:
+        verification, note = False, "⚠️ The solver could not establish a rigorous answer, so none is given. Rephrase the problem or split it into parts."
+    elif state == "correct" and not audit_failed:
         verification = True
-        note = "Verification: PASSED (independently checked with SymPy)" + (f"\n\n*Check:* {evidence}" if evidence else "")
+        detail = f"; {audit['checked']} solution step(s) audited" if audit and audit["checked"] else ""
+        note = "Verification: PASSED (independently checked with SymPy" + detail + ")" + (f"\n\n*Check:* {evidence}" if evidence else "")
     elif state == "incorrect":
         verification = False
         note = f"⚠️ Verification FAILED: {evidence} This answer is probably wrong, so do not rely on it."
+    elif state == "correct" and audit_failed:
+        verification = None
+        note = "⚠️ The final answer passed an independent check, but the step audit found problems in the reasoning, so treat this as unconfirmed."
     elif state == "inconclusive":
         verification, note = None, "⚠️ Could not be independently verified. Double-check this answer."
     elif state == "unavailable":
         verification, note = None, f"⚠️ Verification was unavailable ({evidence}). Double-check this answer."
     else:
         verification, note = None, "⚠️ Verification is switched off (JEE_VERIFY=0). Double-check this answer."
+    if audit_failed and not unsure:
+        note += "\n\n**Step audit flagged:**\n" + "\n".join(f"- {f}" for f in audit["failures"][:4])
     if agreement and agreement[0] <= agreement[1] / 2:
         note += " Independent attempts also disagreed with each other."
 
     parts = [normalize(chosen["body"])]
-    if chosen["answer"]:
-        parts.append(f"**Final answer:** {_format_answer(chosen['answer'])}")
+    if chosen["answer"] and not unsure:
+        label = "Final answer" if verification is True else "Unconfirmed answer"
+        parts.append(f"**{label}:** {_format_answer(chosen['answer'])}")
     parts.append(note)
     response = "\n\n".join(p for p in parts if p)
 
-    return {"success": True, "operation": "deep_solve", "result": chosen["answer"],
+    return {"success": True, "operation": "deep_solve",
+            "result": None if unsure else chosen["answer"],
             "steps": chosen["trace"], "verification": verification, "verification_detail": verdict,
-            "response": response}
+            "audit": audit, "response": response}

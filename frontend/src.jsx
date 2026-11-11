@@ -171,8 +171,32 @@ function AuthScreen({ onAuth, notice }) {
     );
 }
 
+// Unwrap \boxed{...} (balanced braces). KaTeX draws it with CSS borders that can
+// render as a stray vertical bar when global CSS interferes with .fbox.
+function unwrapBoxed(text) {
+    const key = "\\boxed{";
+    let out = "";
+    let i = 0;
+    while (i < text.length) {
+        const at = text.indexOf(key, i);
+        if (at === -1) { out += text.slice(i); break; }
+        out += text.slice(i, at);
+        let depth = 1;
+        let j = at + key.length;
+        while (j < text.length && depth > 0) {
+            if (text[j] === "{") depth++;
+            else if (text[j] === "}") depth--;
+            j++;
+        }
+        if (depth !== 0) { out += text.slice(at); break; }
+        out += "{" + unwrapBoxed(text.slice(at + key.length, j - 1)) + "}";
+        i = j;
+    }
+    return out;
+}
+
 function normalizeMathMarkdown(content) {
-    let text = String(content || "");
+    let text = unwrapBoxed(String(content || ""));
 
     // 1. Convert \[ ... \] to $$ ... $$
     text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {

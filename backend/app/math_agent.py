@@ -1470,7 +1470,7 @@ def _normalize_math_markup(text: str) -> str:
     text = text.replace(r"\end{pmatrix}!", r"\end{pmatrix}")
     def clean_math(match: re.Match) -> str:
         body = match.group(1)
-        body = re.sub(r"\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
+        body = re.sub(r"\\?\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
         body = re.sub(r"(?<!\\),\s*dx\b", r"\,dx", body)
         body = re.sub(r"(?<!\\),\s*dy\b", r"\,dy", body)
         return "$" + body + "$"
@@ -1482,16 +1482,10 @@ def _normalize_math_markup(text: str) -> str:
         return "$" + body.replace("\n", " ").strip() + "$"
 
     text = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
-    # Fix inline math with literal newlines (KaTeX breaks on these)
-    def fix_inline_math(match):
-        body = match.group(1)
-        return "$" + body.replace("\n", " ").strip() + "$"
-
-    text = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
     return text
 
 def clean_math_inline(body: str) -> str:
-    body = re.sub(r"\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
+    body = re.sub(r"\\?\s*;\s*(?=\\(?:Longrightarrow|Rightarrow|rightarrow))", lambda _: r"\quad ", body)
     body = re.sub(r"(?<!\\),\s*dx\b", r"\,dx", body)
     body = re.sub(r"(?<!\\),\s*dy\b", r"\,dy", body)
     return body
@@ -1609,6 +1603,13 @@ def _last_user_request(history: list[dict], current_text: str = "") -> str | Non
     return None
 
 
+def _unverified_banner(reason: str = "") -> str:
+    why = f" ({reason.strip()[:200]})" if reason.strip() else ""
+    return ("⚠️ **Unverified solution.** The checked solver was not available or did not finish"
+            f"{why}, so the working below was written WITHOUT computer-algebra verification and may contain "
+            "mistakes. Treat it as a draft and double-check every step before relying on it.")
+
+
 def answer_math(text: str, history: list[dict] | None = None, on_event: Callable[[str, str], None] | None = None) -> dict:
     if not isinstance(text, str) or not text.strip():
         return {
@@ -1655,16 +1656,22 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
         if (planned.get("category"), planned.get("operation")) in OPS:
             return _llm_verify_fastpath(clean_text, execute(planned))
 
-        if reasoning_agent.reasoning_available() and reasoning_agent.looks_like_problem(clean_text, history):
+        deep_failure = ""
+        is_problem = reasoning_agent.looks_like_problem(clean_text, history)
+        if reasoning_agent.reasoning_available() and is_problem:
             deep = reasoning_agent.solve_hard(clean_text, history, normalize=_normalize_math_markup, on_event=on_event)
             if deep.get("success"):
                 return deep
+            deep_failure = str(deep.get("response") or "")
 
         if on_event: on_event("status", "Generating conversational reply...")
         reply = _conversational_reply(clean_text, history)
+        if is_problem:
+            # A tool-free, unchecked solution must never look like a verified one.
+            reply = _unverified_banner(deep_failure) + "\n\n" + reply
         return {
             "success": True, "operation": "conversation", "result": reply,
-            "steps": [], "verification": None, "response": reply,
+            "steps": [], "verification": False if is_problem else None, "response": reply,
         }
     except (ValueError, TypeError, SyntaxError, sp.SympifyError,
             ZeroDivisionError, OverflowError) as error:
