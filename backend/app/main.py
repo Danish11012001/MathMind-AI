@@ -1,10 +1,13 @@
 import json
 import logging
 import os
-import uuid
 import queue
+import re
+import secrets
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -154,6 +157,7 @@ def logout(authorization: str | None = Header(None)):
 class Chat(BaseModel):
  message: str = Field(min_length=1, max_length=8000)
  conversation_id: str | None = None
+ replace_from: int | None = None
 
 
 class NewChat(BaseModel):
@@ -203,9 +207,120 @@ def delete_chat(cid: str, user: dict = Depends(current_user)):
   if not c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?", (cid, user["id"])).fetchone():
    raise HTTPException(404, "Conversation not found")
   c.execute("DELETE FROM messages WHERE conversation_id=?", (cid,))
+  c.execute("DELETE FROM shares WHERE conversation_id=?", (cid,))
   c.execute("DELETE FROM conversations WHERE id=?", (cid,))
  return {"deleted": True}
 
+
+# --------------------------------------------------------------------------- #
+# Sharing
+# --------------------------------------------------------------------------- #
+
+@app.post("/api/conversations/{cid}/share")
+def share_chat(cid: str, user: dict = Depends(current_user)):
+ with connect() as c:
+  if not c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?",
+                   (cid, user["id"])).fetchone():
+   raise HTTPException(404, "Conversation not found")
+  existing = c.execute(
+   "SELECT token FROM shares WHERE conversation_id=? AND user_id=?",
+   (cid, user["id"])).fetchone()
+  if existing:
+   token = existing["token"]
+  else:
+   token = secrets.token_urlsafe(18)
+   c.execute("INSERT INTO shares(token,conversation_id,user_id,created) VALUES(?,?,?,?)",
+             (token, cid, user["id"], ts()))
+ return {"token": token}
+
+
+@app.delete("/api/conversations/{cid}/share")
+def unshare_chat(cid: str, user: dict = Depends(current_user)):
+ with connect() as c:
+  if not c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?",
+                   (cid, user["id"])).fetchone():
+   raise HTTPException(404, "Conversation not found")
+  c.execute("DELETE FROM shares WHERE conversation_id=? AND user_id=?",
+            (cid, user["id"]))
+ return {"ok": True}
+
+
+@app.get("/api/shared/{token}")
+def get_shared(token: str):
+ with connect() as c:
+  share = c.execute("SELECT conversation_id FROM shares WHERE token=?",
+                    (token,)).fetchone()
+  if not share:
+   raise HTTPException(404, "This share link is invalid or has been revoked.")
+  cid = share["conversation_id"]
+  conv = c.execute("SELECT id,title,created FROM conversations WHERE id=?",
+                   (cid,)).fetchone()
+  if not conv:
+   raise HTTPException(404, "This conversation no longer exists.")
+  rows = c.execute(
+   "SELECT role,content,created FROM messages WHERE conversation_id=? ORDER BY id",
+   (cid,)).fetchall()
+ return {
+  "conversation": dict(conv),
+  "messages": [{"role": r["role"], "content": r["content"], "created": r["created"]}
+               for r in rows],
+ }
+
+
+@app.get("/api/conversations/{cid}/export.docx")
+def export_chat_docx(cid: str, user: dict = Depends(current_user)):
+ with connect() as c:
+  conv = c.execute(
+   "SELECT id,title,created FROM conversations WHERE id=? AND user_id=?",
+   (cid, user["id"])).fetchone()
+  if not conv:
+   raise HTTPException(404, "Conversation not found")
+  rows = c.execute(
+   "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id",
+   (cid,)).fetchall()
+
+ from docx import Document
+
+ doc = Document()
+ doc.add_heading(conv["title"] or "MathMind Chat", level=1)
+ doc.add_paragraph("Exported from MathMind")
+
+ for row in rows:
+  label = "You" if row["role"] == "user" else "MathMind"
+  doc.add_heading(label, level=2)
+  for block in re.split(r"\n{2,}", row["content"] or ""):
+   block = block.strip()
+   if not block:
+    continue
+   head = re.match(r"^(#{1,6})\s+(.+)$", block)
+   if head:
+    doc.add_heading(head.group(2), level=min(len(head.group(1)) + 1, 6))
+    continue
+   for line in block.split("\n"):
+    line = line.strip()
+    if not line:
+     continue
+    if re.match(r"^[-*+]\s+", line):
+     doc.add_paragraph(line[2:], style="List Bullet")
+    elif re.match(r"^\d+[.)]\s+", line):
+     doc.add_paragraph(re.sub(r"^\d+[.)]\s+", "", line), style="List Number")
+    else:
+     doc.add_paragraph(line)
+
+ buf = BytesIO()
+ doc.save(buf)
+ buf.seek(0)
+ safe = re.sub(r"[^A-Za-z0-9]+", "-", conv["title"] or "chat")[:40].strip("-") or "chat"
+ return StreamingResponse(
+  buf,
+  media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  headers={"Content-Disposition": f'attachment; filename="mathmind-{safe}.docx"'},
+ )
+
+
+# --------------------------------------------------------------------------- #
+# Chat streaming
+# --------------------------------------------------------------------------- #
 
 def ensure(cid: str | None, user_id: str) -> str:
  with connect() as c:
@@ -238,6 +353,17 @@ def chat(p: Chat, user: dict = Depends(current_user)):
   raise HTTPException(400, "Empty message")
 
  cid = ensure(p.conversation_id, user["id"])
+
+ if p.replace_from is not None:
+  with connect() as c:
+   exists = c.execute(
+    "SELECT 1 FROM messages WHERE conversation_id=? AND id=?",
+    (cid, p.replace_from)).fetchone()
+   if not exists:
+    raise HTTPException(404, "The message you tried to edit no longer exists.")
+   c.execute("DELETE FROM messages WHERE conversation_id=? AND id>=?",
+             (cid, p.replace_from))
+
  save(cid, "user", text)
 
  with connect() as c:
@@ -273,7 +399,7 @@ def chat(p: Chat, user: dict = Depends(current_user)):
  return StreamingResponse(
   event_generator(),
   media_type="text/event-stream",
-  headers={"X-Accel-Buffering": "no"} # Prevents proxy buffering
+  headers={"X-Accel-Buffering": "no"},
  )
 
 

@@ -21,6 +21,11 @@ import {
     Eye,
     EyeOff,
     Loader2,
+    Share2,
+    Download,
+    Pencil,
+    Check,
+    Link2,
 } from "lucide-react";
 
 import "katex/dist/katex.min.css";
@@ -73,6 +78,13 @@ function errorText(detail, fallback) {
     if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) return detail.map((item) => item.msg).join(" ") || fallback;
     return fallback;
+}
+
+function getShareToken() {
+    const fromHash = window.location.hash.match(/^#share\/([A-Za-z0-9_-]+)/);
+    if (fromHash) return fromHash[1];
+    const fromPath = window.location.pathname.match(/^\/share\/([A-Za-z0-9_-]+)/);
+    return fromPath ? fromPath[1] : null;
 }
 
 function AuthScreen({ onAuth, notice }) {
@@ -240,6 +252,11 @@ function ChatApp({ user, onSignOut }) {
     const [hint, setHint] = useState("");
     const [dragging, setDragging] = useState(false);
 
+    // New state for edit + share features
+    const [editingId, setEditingId] = useState(null);
+    const [editText, setEditText] = useState("");
+    const [shareUrl, setShareUrl] = useState("");
+
     const end = useRef(null);
     const input = useRef(null);
     const fileInput = useRef(null);
@@ -277,7 +294,12 @@ function ChatApp({ user, onSignOut }) {
             const data = await response.json();
             setCid(id);
             if (isMobile()) setSide(false);
-            setMsgs(data.messages.map((m) => ({ role: m.role, content: m.content, metadata: m.metadata })));
+            setMsgs(data.messages.map((m) => ({
+                id: m.id,
+                role: m.role,
+                content: m.content,
+                metadata: m.metadata,
+            })));
             setErr("");
         } catch {
             setErr("Unable to open conversation.");
@@ -287,29 +309,37 @@ function ChatApp({ user, onSignOut }) {
     function fresh() {
         if (isMobile()) setSide(false);
         setCid(null); setMsgs([]); setText(""); setErr(""); setHint(""); setFiles([]);
+        setEditingId(null); setEditText(""); setShareUrl("");
         input.current?.focus();
     }
 
-    async function send(event) {
-        event?.preventDefault();
-        const question = text.trim();
+    async function sendMessage(question, replaceFrom = null) {
         if (!question || busy || reading) return;
 
-        setText("");
-        setHint("");
-        setMsgs((messages) => [
-            ...messages,
-            { role: "user", content: question },
-            { role: "assistant", content: "", status: "Thinking..." }
-        ]);
-        setBusy(true);
         setErr("");
+        setHint("");
+        setMsgs((prev) => {
+            let base = prev;
+            if (replaceFrom != null) {
+                const idx = prev.findIndex((m) => m.id === replaceFrom);
+                if (idx !== -1) base = prev.slice(0, idx);
+            }
+            return [
+                ...base,
+                { role: "user", content: question },
+                { role: "assistant", content: "", status: "Thinking..." },
+            ];
+        });
+        setBusy(true);
 
         try {
+            const body = { message: question, conversation_id: cid };
+            if (replaceFrom != null) body.replace_from = replaceFrom;
+
             const response = await apiFetch("/api/chat", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: question, conversation_id: cid }),
+                body: JSON.stringify(body),
             });
 
             if (!response.ok) {
@@ -330,54 +360,83 @@ function ChatApp({ user, onSignOut }) {
                 partialData = lines.pop() || "";
 
                 for (const line of lines) {
-                    if (line.startsWith("data: ")) {
-                        const event = JSON.parse(line.slice(6));
+                    if (!line.startsWith("data: ")) continue;
+                    const event = JSON.parse(line.slice(6));
 
-                        if (event.type === "status" || event.type === "tool") {
-                            setMsgs((messages) => {
-                                const newMsgs = [...messages];
-                                const lastMsg = newMsgs[newMsgs.length - 1];
-                                if (lastMsg.role === "assistant" && lastMsg.status !== undefined) {
-                                    lastMsg.status = event.content;
-                                }
-                                return newMsgs;
-                            });
-                        }
-                        else if (event.type === "result") {
-                            const data = event.data;
-                            setCid(data.conversation_id);
-                            setMsgs((messages) => {
-                                const newMsgs = [...messages];
-                                const lastMsg = newMsgs[newMsgs.length - 1];
-                                if (lastMsg.role === "assistant") {
-                                    delete lastMsg.status;
-                                    lastMsg.content = data.response;
-                                    lastMsg.metadata = data;
-                                }
-                                return newMsgs;
-                            });
-                            await load();
-                        }
+                    if (event.type === "status" || event.type === "tool") {
+                        setMsgs((messages) => {
+                            const next = [...messages];
+                            const last = next[next.length - 1];
+                            if (last.role === "assistant" && last.status !== undefined) {
+                                last.status = event.content;
+                            }
+                            return next;
+                        });
+                    } else if (event.type === "result") {
+                        const data = event.data;
+                        setCid(data.conversation_id);
+                        setMsgs((messages) => {
+                            const next = [...messages];
+                            const last = next[next.length - 1];
+                            if (last.role === "assistant") {
+                                delete last.status;
+                                last.content = data.response;
+                                last.metadata = data;
+                            }
+                            return next;
+                        });
+                        await load();
+                        if (data.conversation_id) await open(data.conversation_id);
                     }
                 }
             }
         } catch (error) {
             const offline = error instanceof TypeError;
             setMsgs((messages) => {
-                const newMsgs = [...messages];
-                const lastMsg = newMsgs[newMsgs.length - 1];
-                if (lastMsg.role === "assistant" && lastMsg.status) {
-                    delete lastMsg.status;
-                    lastMsg.content = offline
+                const next = [...messages];
+                const last = next[next.length - 1];
+                if (last.role === "assistant" && last.status) {
+                    delete last.status;
+                    last.content = offline
                         ? "Could not reach the server. Please check your connection and try again."
                         : error.message;
                 }
-                return newMsgs;
+                return next;
             });
             setErr(offline ? "Connection problem. Please try again." : "");
+            if (cid) await open(cid);
         } finally {
             setBusy(false);
             input.current?.focus();
+        }
+    }
+
+    function send(event) {
+        event?.preventDefault();
+        const question = text.trim();
+        if (!question) return;
+        setText("");
+        sendMessage(question);
+    }
+
+    function submitEdit() {
+        const next = editText.trim();
+        if (!next || editingId == null) return;
+        const id = editingId;
+        setEditingId(null);
+        setEditText("");
+        sendMessage(next, id);
+    }
+
+    async function shareChat() {
+        if (!cid) return;
+        try {
+            const res = await apiFetch(`/api/conversations/${cid}/share`, { method: "POST" });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(errorText(data.detail, "Could not create a share link."));
+            setShareUrl(`${window.location.origin}/#share/${data.token}`);
+        } catch (e) {
+            setErr(e.message || "Could not create a share link.");
         }
     }
 
@@ -462,7 +521,38 @@ function ChatApp({ user, onSignOut }) {
 
             <main>
                 {!side && <button className="menu" onClick={() => setSide(true)}><Menu /></button>}
-                <header><Sparkles /> Mathematical AI <span>AI + SymPy</span></header>
+                <header>
+                    <Sparkles /> Mathematical AI <span>AI + SymPy</span>
+                    {cid && (
+                        <div className="header-actions">
+                            <button className="header-btn" onClick={shareChat} title="Share chat">
+                                <Share2 size={16} />
+                            </button>
+                            <button
+                                className="header-btn"
+                                title="Download as Word"
+                                onClick={() =>
+                                    apiFetch(`/api/conversations/${cid}/export.docx`)
+                                        .then(async (r) => {
+                                            if (!r.ok) throw new Error("Download failed");
+                                            return r.blob();
+                                        })
+                                        .then((blob) => {
+                                            const url = URL.createObjectURL(blob);
+                                            const a = document.createElement("a");
+                                            a.href = url;
+                                            a.download = "mathmind-chat.docx";
+                                            a.click();
+                                            URL.revokeObjectURL(url);
+                                        })
+                                        .catch(() => setErr("Could not download the document."))
+                                }
+                            >
+                                <Download size={16} />
+                            </button>
+                        </div>
+                    )}
+                </header>
 
                 <section className="feed">
                     {!msgs.length ? (
@@ -478,23 +568,54 @@ function ChatApp({ user, onSignOut }) {
                         </div>
                     ) : (
                         msgs.map((message, index) => (
-                            <article className={message.role} key={index}>
+                            <article className={message.role} key={message.id || `m-${index}`}>
                                 {message.role === "assistant" && <div className="avatar"><Sparkles /></div>}
-                                <div className="bubble">
-                                    {message.status ? (
-                                        <div className="agent-status">
-                                            <Loader2 size={16} className="spin" />
-                                            <span>{message.status}</span>
+                                {message.role === "user" && message.id === editingId ? (
+                                    <div className="edit-card">
+                                        <textarea
+                                            value={editText}
+                                            onChange={(e) => setEditText(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
+                                                if (e.key === "Escape") { setEditingId(null); setEditText(""); }
+                                            }}
+                                            autoFocus
+                                        />
+                                        <div className="edit-actions">
+                                            <button className="ghost" onClick={() => { setEditingId(null); setEditText(""); }}>
+                                                Cancel
+                                            </button>
+                                            <button className="primary-mini" onClick={submitEdit} disabled={!editText.trim()}>
+                                                <Check size={14} /> Save &amp; resend
+                                            </button>
                                         </div>
-                                    ) : (
-                                        <div className="markdown-content">{renderMessage(message)}</div>
-                                    )}
-                                    {message.role === "assistant" && !message.status && (
-                                        <button className="copy" onClick={() => navigator.clipboard.writeText(message.content)}>
-                                            <Copy size={13} /> Copy
-                                        </button>
-                                    )}
-                                </div>
+                                    </div>
+                                ) : (
+                                    <div className="bubble">
+                                        {message.status ? (
+                                            <div className="agent-status">
+                                                <Loader2 size={16} className="spin" />
+                                                <span>{message.status}</span>
+                                            </div>
+                                        ) : (
+                                            <div className="markdown-content">{renderMessage(message)}</div>
+                                        )}
+                                        {message.role === "assistant" && !message.status && (
+                                            <button className="copy" onClick={() => navigator.clipboard.writeText(message.content)}>
+                                                <Copy size={13} /> Copy
+                                            </button>
+                                        )}
+                                        {message.role === "user" && message.id && !message.status && (
+                                            <button
+                                                className="edit-msg"
+                                                title="Edit & resend"
+                                                onClick={() => { setEditingId(message.id); setEditText(message.content); }}
+                                            >
+                                                <Pencil size={13} />
+                                            </button>
+                                        )}
+                                    </div>
+                                )}
                             </article>
                         ))
                     )}
@@ -537,11 +658,94 @@ function ChatApp({ user, onSignOut }) {
                     <small>Enter to send · Shift+Enter for newline · Paste or drop images and files · Verify important results</small>
                 </div>
             </main>
+
+            {shareUrl && (
+                <div className="modal-scrim" onClick={() => setShareUrl("")}>
+                    <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+                        <h2>Share this chat</h2>
+                        <p>Anyone with the link can view the conversation. Revoke it anytime.</p>
+                        <div className="share-row">
+                            <input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
+                            <button className="primary-mini" onClick={() => navigator.clipboard.writeText(shareUrl)}>
+                                <Link2 size={14} /> Copy
+                            </button>
+                        </div>
+                        <div className="share-row">
+                            <button className="ghost" onClick={() => setShareUrl("")}>Close</button>
+                            <button
+                                className="ghost danger"
+                                onClick={async () => {
+                                    await apiFetch(`/api/conversations/${cid}/share`, { method: "DELETE" });
+                                    setShareUrl("");
+                                }}
+                            >
+                                Revoke link
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function SharedView({ token }) {
+    const [data, setData] = useState(null);
+    const [error, setError] = useState("");
+
+    useEffect(() => {
+        (async () => {
+            try {
+                const res = await fetch(`${API}/api/shared/${encodeURIComponent(token)}`);
+                const json = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(errorText(json.detail, "This share link is unavailable."));
+                setData(json);
+            } catch (e) {
+                setError(e instanceof TypeError ? "Can't reach the server." : e.message);
+            }
+        })();
+    }, [token]);
+
+    if (error) {
+        return (
+            <div className="shared-page">
+                <div className="shared-error">
+                    <p className="error">{error}</p>
+                    <a href="/" className="shared-home">← Back to MathMind</a>
+                </div>
+            </div>
+        );
+    }
+    if (!data) return <div className="splash"><Loader2 className="spin" /></div>;
+
+    return (
+        <div className="shared-page">
+            <header className="shared-header">
+                <Calculator /> MathMind <span>Shared conversation</span>
+                <a href="/" className="shared-try">Open MathMind →</a>
+            </header>
+            <main className="shared-feed">
+                <h1>{data.conversation.title || "Untitled chat"}</h1>
+                {data.messages.map((m, i) => (
+                    <article className={m.role} key={i}>
+                        {m.role === "assistant" && <div className="avatar"><Sparkles /></div>}
+                        <div className="bubble">
+                            <div className="markdown-content">{renderMessage(m)}</div>
+                        </div>
+                    </article>
+                ))}
+            </main>
         </div>
     );
 }
 
 function App() {
+    const shareToken = getShareToken();
+    if (shareToken) return <SharedView token={shareToken} />;
+    return <AuthedApp />;
+}
+
+function AuthedApp() {
     const [user, setUser] = useState(null);
     const [ready, setReady] = useState(false);
     const [notice, setNotice] = useState("");
@@ -567,7 +771,7 @@ function App() {
     }, []);
 
     async function signOut() {
-        try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch {}
+        try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
         setToken(null); setNotice(""); setUser(null);
     }
 

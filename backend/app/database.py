@@ -74,6 +74,8 @@ def init_db() -> None:
         "client_id TEXT, user_id TEXT)",
         f"CREATE TABLE IF NOT EXISTS messages(id {auto_id}, conversation_id TEXT, role TEXT, content TEXT, "
         "metadata TEXT, created TEXT)",
+        "CREATE TABLE IF NOT EXISTS shares(token TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, "
+        "user_id TEXT NOT NULL, created TEXT)",
     ]
     with connect() as c:
         for sql in statements:
@@ -91,5 +93,6 @@ def init_db() -> None:
                 "CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id, updated)",
                 "CREATE INDEX IF NOT EXISTS idx_msg_conv ON messages(conversation_id, id)",
                 "CREATE INDEX IF NOT EXISTS idx_sess_user ON sessions(user_id)",
+                "CREATE INDEX IF NOT EXISTS idx_shares_conv ON shares(conversation_id)",
         ):
             c.execute(sql)
