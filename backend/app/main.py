@@ -43,7 +43,7 @@ def startup():
 
 
 # =========================================================================== #
-# Word-export math rendering (LaTeX -> OMML)
+# Word export: LaTeX → OMML (native Word equations) + Unicode fallback
 # =========================================================================== #
 
 OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
@@ -54,7 +54,8 @@ _DISPLAY_MATH = re.compile(r"\$\$([\s\S]+?)\$\$")
 
 
 def _ensure_omml_ns(xml_str: str) -> str:
- """Make sure the fragment declares the m: and w: namespaces it uses."""
+ """Ensure the fragment declares the m: and w: namespaces it uses."""
+ xml_str = xml_str.strip()
  if "xmlns:m=" in xml_str[:400]:
   return xml_str
  m = re.match(r"<([\w:]+)", xml_str)
@@ -64,15 +65,16 @@ def _ensure_omml_ns(xml_str: str) -> str:
 
 
 def _latex_to_omml(latex_str: str) -> str | None:
- """Convert a LaTeX math expression to an inline <m:oMath> OMML fragment.
+ """Convert a LaTeX expression to an inline <m:oMath> OMML fragment.
 
- Returns None when the conversion packages are not installed or the
- expression uses a construct latex2mathml cannot handle.
+ Returns None when the conversion packages are missing or the expression
+ uses a construct latex2mathml cannot handle.
  """
  try:
   from latex2mathml.converter import convert as latex_to_mathml
   from mathml2omml import convert as mathml_to_omml
- except ImportError:
+ except Exception:
+  logger.debug("OMML libraries unavailable; using Unicode fallback")
   return None
  try:
   mathml = latex_to_mathml(latex_str)
@@ -80,7 +82,7 @@ def _latex_to_omml(latex_str: str) -> str | None:
   if not (isinstance(omml, str) and omml.strip()):
    return None
   # mathml2omml may return <m:oMathPara><m:oMath>…</m:oMath></m:oMathPara>
-  # for block math. We always want the inline form so it can live inside <w:p>.
+  # for block math. We always want the inline form so it can sit inside <w:p>.
   if "<m:oMathPara" in omml:
    inner = re.search(r"<m:oMath[\s>][\s\S]*?</m:oMath>", omml)
    if inner:
@@ -103,43 +105,195 @@ def _insert_omml(paragraph, omml_xml: str) -> bool:
   return False
 
 
-_FALLBACK_SUBS = [
- (r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)"),
+# Unicode superscript / subscript maps for x², x₁, ∑ᵢ₌₁ⁿ, ∫₀¹, etc.
+_SUP = str.maketrans("0123456789+-=()ni", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿⁱ")
+_SUB = str.maketrans("0123456789+-=()aeioruvx", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑᵢₒᵣᵤᵥₓ")
+
+_GREEK = {
+ r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\delta": "δ",
+ r"\epsilon": "ε", r"\varepsilon": "ε", r"\zeta": "ζ", r"\eta": "η",
+ r"\theta": "θ", r"\vartheta": "ϑ", r"\iota": "ι", r"\kappa": "κ",
+ r"\lambda": "λ", r"\mu": "μ", r"\nu": "ν", r"\xi": "ξ",
+ r"\pi": "π", r"\varpi": "ϖ", r"\rho": "ρ", r"\varrho": "ϱ",
+ r"\sigma": "σ", r"\varsigma": "ς", r"\tau": "τ", r"\upsilon": "υ",
+ r"\phi": "φ", r"\varphi": "φ", r"\chi": "χ", r"\psi": "ψ",
+ r"\omega": "ω",
+ r"\Gamma": "Γ", r"\Delta": "Δ", r"\Theta": "Θ", r"\Lambda": "Λ",
+ r"\Xi": "Ξ", r"\Pi": "Π", r"\Sigma": "Σ", r"\Upsilon": "Υ",
+ r"\Phi": "Φ", r"\Psi": "Ψ", r"\Omega": "Ω",
+}
+
+_OPERATORS = {
+ r"\cdot": "·", r"\times": "×", r"\div": "÷", r"\pm": "±", r"\mp": "∓",
+ r"\ast": "∗", r"\star": "⋆", r"\circ": "∘", r"\bullet": "•",
+ r"\leq": "≤", r"\le": "≤", r"\geq": "≥", r"\ge": "≥",
+ r"\neq": "≠", r"\ne": "≠", r"\approx": "≈", r"\equiv": "≡",
+ r"\sim": "∼", r"\simeq": "≃", r"\cong": "≅", r"\propto": "∝",
+ r"\ll": "≪", r"\gg": "≫",
+ r"\infty": "∞", r"\partial": "∂", r"\nabla": "∇",
+ r"\sum": "∑", r"\prod": "∏", r"\int": "∫", r"\iint": "∬", r"\iiint": "∭",
+ r"\oint": "∮",
+ r"\in": "∈", r"\notin": "∉", r"\ni": "∋",
+ r"\subset": "⊂", r"\supset": "⊃", r"\subseteq": "⊆", r"\supseteq": "⊇",
+ r"\cup": "∪", r"\cap": "∩", r"\setminus": "∖", r"\emptyset": "∅",
+ r"\forall": "∀", r"\exists": "∃", r"\neg": "¬", r"\lnot": "¬",
+ r"\land": "∧", r"\lor": "∨",
+ r"\to": "→", r"\rightarrow": "→", r"\leftarrow": "←",
+ r"\leftrightarrow": "↔", r"\Rightarrow": "⇒", r"\Leftarrow": "⇐",
+ r"\Leftrightarrow": "⇔", r"\implies": "⇒", r"\iff": "⇔",
+ r"\mapsto": "↦",
+ r"\angle": "∠", r"\perp": "⊥", r"\parallel": "∥",
+ r"\triangle": "△", r"\square": "□", r"\diamond": "◇",
+ r"\ldots": "…", r"\cdots": "⋯", r"\vdots": "⋮", r"\ddots": "⋱",
+ r"\prime": "′", r"\degree": "°",
+ r"\langle": "⟨", r"\rangle": "⟩",
+ r"\lfloor": "⌊", r"\rfloor": "⌋", r"\lceil": "⌈", r"\rceil": "⌉",
+ r"\lbrace": "{", r"\rbrace": "}",
+}
+
+_FUNCS = {
+ r"\sin": "sin", r"\cos": "cos", r"\tan": "tan", r"\cot": "cot",
+ r"\sec": "sec", r"\csc": "csc",
+ r"\arcsin": "arcsin", r"\arccos": "arccos", r"\arctan": "arctan",
+ r"\sinh": "sinh", r"\cosh": "cosh", r"\tanh": "tanh",
+ r"\log": "log", r"\ln": "ln", r"\exp": "exp",
+ r"\lim": "lim", r"\max": "max", r"\min": "min", r"\sup": "sup", r"\inf": "inf",
+ r"\det": "det", r"\dim": "dim", r"\ker": "ker", r"\deg": "deg",
+ r"\gcd": "gcd", r"\bmod": "mod", r"\mod": "mod",
+}
+
+_SCRIPT_PATTERNS = [
+ (r"\\sqrt\[([^\]]+)\]\{([^{}]*)\}", r"(\2)^(1/\1)"),
  (r"\\sqrt\{([^{}]*)\}", r"√(\1)"),
- (r"\\sqrt\b", "√"),
- (r"\\pi\b", "π"), (r"\\theta\b", "θ"), (r"\\alpha\b", "α"), (r"\\beta\b", "β"),
- (r"\\gamma\b", "γ"), (r"\\delta\b", "δ"), (r"\\epsilon\b", "ε"),
- (r"\\lambda\b", "λ"), (r"\\mu\b", "μ"), (r"\\sigma\b", "σ"), (r"\\phi\b", "φ"),
- (r"\\omega\b", "ω"), (r"\\Sigma\b", "Σ"), (r"\\Delta\b", "Δ"), (r"\\Omega\b", "Ω"),
- (r"\\times\b", "×"), (r"\\div\b", "÷"), (r"\\cdot\b", "·"),
- (r"\\pm\b", "±"), (r"\\mp\b", "∓"),
- (r"\\leq\b|\\le\b", "≤"), (r"\\geq\b|\\ge\b", "≥"),
- (r"\\neq\b|\\ne\b", "≠"), (r"\\approx\b", "≈"), (r"\\equiv\b", "≡"),
- (r"\\infty\b", "∞"), (r"\\partial\b", "∂"), (r"\\nabla\b", "∇"),
- (r"\\sum\b", "∑"), (r"\\prod\b", "∏"), (r"\\int\b", "∫"),
- (r"\\in\b", "∈"), (r"\\notin\b", "∉"),
- (r"\\subset\b", "⊂"), (r"\\supset\b", "⊃"),
- (r"\\cup\b", "∪"), (r"\\cap\b", "∩"),
- (r"\\to\b|\\rightarrow\b", "→"), (r"\\Rightarrow\b|\\implies\b", "⇒"),
- (r"\\leftrightarrow\b", "↔"), (r"\\Leftrightarrow\b", "⇔"),
- (r"\\forall\b", "∀"), (r"\\exists\b", "∃"),
- (r"\\angle\b", "∠"), (r"\\perp\b", "⊥"), (r"\\parallel\b", "∥"),
- (r"\\sin\b", "sin"), (r"\\cos\b", "cos"), (r"\\tan\b", "tan"),
- (r"\\ln\b", "ln"), (r"\\log\b", "log"), (r"\\exp\b", "exp"),
- (r"\\left\b", ""), (r"\\right\b", ""),
+ (r"\\left\s*", ""), (r"\\right\s*", ""),
+ (r"\\[,;:! ]", " "), (r"\\quad", "  "), (r"\\qquad", "    "),
+ (r"\\!", ""),
+ (r"\\text\{([^{}]*)\}", r"\1"),
+ (r"\\mathrm\{([^{}]*)\}", r"\1"),
+ (r"\\mathbf\{([^{}]*)\}", r"\1"),
+ (r"\\mathbb\{([^{}]*)\}", r"\1"),
+ (r"\\mathcal\{([^{}]*)\}", r"\1"),
+ (r"\\operatorname\{([^{}]*)\}", r"\1"),
+ (r"\\boxed\{([^{}]*)\}", r"[\1]"),
+ (r"\\displaystyle", ""),
+ (r"\\\\", " "),
  (r"\\[{}]", ""),
- (r"\\,", " "), (r"\\;", " "), (r"\\!", ""),
- (r"\\quad\b", "  "), (r"\\qquad\b", "    "),
 ]
 
 
+def _substitute_fracs(s: str) -> str:
+ """Iteratively replace \\frac{..}{..} (balanced braces) with (num)/(den)."""
+ keys = ("\\dfrac", "\\tfrac", "\\frac")
+ i = 0
+ out = ""
+ while i < len(s):
+  at = -1
+  skip = ""
+  for key in keys:
+   idx = s.find(key, i)
+   if idx != -1 and (at == -1 or idx < at):
+    at, skip = idx, key
+  if at == -1:
+   out += s[i:]
+   break
+
+  def read_group(pos):
+   if pos >= len(s) or s[pos] != "{":
+    return None, pos
+   depth = 0
+   for j in range(pos, len(s)):
+    if s[j] == "{":
+     depth += 1
+    elif s[j] == "}":
+     depth -= 1
+     if depth == 0:
+      return s[pos + 1:j], j + 1
+   return None, pos
+
+  num, after = read_group(at + len(skip))
+  if num is None:
+   out += s[i:at + len(skip)]
+   i = at + len(skip)
+   continue
+  den, end = read_group(after)
+  if den is None:
+   out += s[i:at + len(skip)]
+   i = at + len(skip)
+   continue
+  out += s[i:at]
+  out += f"({_substitute_fracs(num)})/({_substitute_fracs(den)})"
+  i = end
+ return out
+
+
 def _latex_fallback(latex_str: str) -> str:
- """Readable plain-text fallback when OMML libraries are not installed."""
- s = latex_str
- for pattern, repl in _FALLBACK_SUBS:
+ """Readable Unicode plain-text renderer used when OMML conversion fails."""
+ s = _substitute_fracs(latex_str)
+
+ # Replace known macros (longest first so \subseteq wins over \subset).
+ for mapping in (_GREEK, _OPERATORS, _FUNCS):
+  for macro in sorted(mapping, key=len, reverse=True):
+   s = s.replace(macro, mapping[macro])
+
+ for pattern, repl in _SCRIPT_PATTERNS:
   s = re.sub(pattern, repl, s)
- s = re.sub(r"\^\{([^{}]*)\}", r"^(\1)", s)
- s = re.sub(r"_\{([^{}]*)\}", r"_\1", s)
+
+ # x^2 -> x², x^{ab} -> x^(ab)
+ def sup_repl(m):
+  body = m.group(1)
+  if body.isdigit() or (len(body) <= 2 and all(c in "0123456789+-=()" for c in body)):
+   return body.translate(_SUP)
+  return f"^({body})"
+ s = re.sub(r"\^\{([^{}]*)\}", sup_repl, s)
+ s = re.sub(r"\^([0-9])", lambda m: m.group(1).translate(_SUP), s)
+
+ # x_1 -> x₁, x_{ab} -> x_(ab)
+ def sub_repl(m):
+  body = m.group(1)
+  if body.isdigit() or (len(body) <= 2 and all(c in "0123456789+-=()aeioruvx" for c in body)):
+   return body.translate(_SUB)
+  return f"_({body})"
+ s = re.sub(r"_\{([^{}]*)\}", sub_repl, s)
+ s = re.sub(r"_([0-9])", lambda m: m.group(1).translate(_SUB), s)
+
+ # \begin{matrix} / {pmatrix} / {bmatrix} -> "[r1c1 r1c2 ...; r2c1 r2c2 ...]"
+ def matrix_repl(m):
+  env = m.group(1)
+  body = m.group(2)
+  rows = [row.strip() for row in re.split(r"\\\\", body) if row.strip()]
+  rows = [[cell.strip() for cell in row.split("&")] for row in rows]
+  rendered = " ".join(" ".join(cells) for cells in rows)
+  return "[" + rendered + "]"
+ s = re.sub(
+  r"\\begin\{(matrix|pmatrix|bmatrix|vmatrix|Bmatrix|smallmatrix)\}([\s\S]*?)\\end\{\1\}",
+  matrix_repl, s,
+ )
+
+ # \begin{cases} a & x>0 \\ b & x<=0 \end{cases} -> { a if x>0; b if x<=0 }
+ def cases_repl(m):
+  body = m.group(1)
+  rows = [row.strip() for row in re.split(r"\\\\", body) if row.strip()]
+  parts = []
+  for row in rows:
+   cols = [c.strip() for c in row.split("&")]
+   if len(cols) == 2:
+    parts.append(f"{cols[0]} if {cols[1]}")
+   else:
+    parts.append(row)
+  return "{ " + "; ".join(parts) + " }"
+ s = re.sub(r"\\begin\{cases\}([\s\S]*?)\\end\{cases\}", cases_repl, s)
+
+ # \begin{aligned} / {align} -> join rows with space
+ s = re.sub(
+  r"\\begin\{aligned\}([\s\S]*?)\\end\{aligned\}",
+  lambda m: " ".join(r.strip() for r in re.split(r"\\\\", m.group(1)) if r.strip()),
+  s,
+ )
+
+ # Leftover orphan backslash commands → drop the backslash, keep the name.
+ s = re.sub(r"\\([A-Za-z]+)", r"\1", s)
+ s = re.sub(r"\\[{}]", "", s)
+ s = re.sub(r"[ \t]+", " ", s)
  return s.strip()
 
 
@@ -175,7 +329,7 @@ def _fill_paragraph_with_math(paragraph, text: str) -> None:
 
 
 def _write_text_block(doc, block: str) -> None:
- """Write a paragraph-block (markdown + inline math) into the doc."""
+ """Write a markdown block (with inline math) into the doc."""
  for para_block in re.split(r"\n{2,}", block):
   para_block = para_block.strip()
   if not para_block:
@@ -247,7 +401,7 @@ def issue_session(c, user_id: str) -> str:
  token, token_hash = auth.new_token()
  now = datetime.now(timezone.utc)
  expires = (now + timedelta(days=auth.SESSION_DAYS)).isoformat(timespec="microseconds")
- c.execute("DELETE FROM sessions WHERE expires<?", (ts(),))
+ c.execute("DELETE FROM sessions WHERE expires<?", (ts(),))  # opportunistic cleanup
  c.execute("INSERT INTO sessions(token_hash,user_id,created,expires) VALUES(?,?,?,?)",
            (token_hash, user_id, ts(), expires))
  return token
@@ -286,10 +440,12 @@ def login(p: Login, request: Request):
   email = auth.normalize_email(p.email)
  except ValueError:
   raise HTTPException(401, "Incorrect email or password.")
- if not (limiter.allow(f"login-ip:{client_ip(request)}", 30, 600) and limiter.allow(f"login:{email}", 8, 600)):
+ if not (limiter.allow(f"login-ip:{client_ip(request)}", 30, 600)
+         and limiter.allow(f"login:{email}", 8, 600)):
   raise HTTPException(429, "Too many sign-in attempts. Please wait a few minutes and try again.")
  with connect() as c:
   row = c.execute("SELECT id,email,name,password_hash FROM users WHERE email=?", (email,)).fetchone()
+  # Always do one password hash so response time doesn't reveal whether the email exists.
   valid = auth.verify_password(p.password, row["password_hash"] if row else auth.DUMMY_HASH)
   if not row or not valid:
    raise HTTPException(401, "Incorrect email or password.")
@@ -331,7 +487,7 @@ def logout(authorization: str | None = Header(None)):
 
 
 # =========================================================================== #
-# Conversations
+# Conversations (always scoped to the signed-in user)
 # =========================================================================== #
 
 class Chat(BaseModel):
@@ -352,8 +508,9 @@ def health():
 @app.get("/api/conversations")
 def list_chats(user: dict = Depends(current_user)):
  with connect() as c:
-  rows = c.execute("SELECT id,title,created,updated FROM conversations WHERE user_id=? ORDER BY updated DESC",
-                   (user["id"],)).fetchall()
+  rows = c.execute(
+   "SELECT id,title,created,updated FROM conversations WHERE user_id=? ORDER BY updated DESC",
+   (user["id"],)).fetchall()
  return [dict(r) for r in rows]
 
 
@@ -384,7 +541,8 @@ def get_chat(cid: str, user: dict = Depends(current_user)):
 @app.delete("/api/conversations/{cid}")
 def delete_chat(cid: str, user: dict = Depends(current_user)):
  with connect() as c:
-  if not c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?", (cid, user["id"])).fetchone():
+  if not c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?",
+                   (cid, user["id"])).fetchone():
    raise HTTPException(404, "Conversation not found")
   c.execute("DELETE FROM messages WHERE conversation_id=?", (cid,))
   c.execute("DELETE FROM shares WHERE conversation_id=?", (cid,))
@@ -487,7 +645,8 @@ def export_chat_docx(cid: str, user: dict = Depends(current_user)):
 
 def ensure(cid: str | None, user_id: str) -> str:
  with connect() as c:
-  if cid and c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?", (cid, user_id)).fetchone():
+  if cid and c.execute("SELECT 1 FROM conversations WHERE id=? AND user_id=?",
+                       (cid, user_id)).fetchone():
    return cid
   cid, t = str(uuid.uuid4()), ts()
   c.execute("INSERT INTO conversations(id,title,created,updated,user_id) VALUES(?,?,?,?,?)",
@@ -517,6 +676,7 @@ def chat(p: Chat, user: dict = Depends(current_user)):
 
  cid = ensure(p.conversation_id, user["id"])
 
+ # Editing a previous prompt: drop the edited message and everything after it.
  if p.replace_from is not None:
   with connect() as c:
    exists = c.execute(
@@ -530,8 +690,9 @@ def chat(p: Chat, user: dict = Depends(current_user)):
  save(cid, "user", text)
 
  with connect() as c:
-  rows = c.execute("SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 6",
-                   (cid,)).fetchall()
+  rows = c.execute(
+   "SELECT role,content FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 6",
+   (cid,)).fetchall()
   hist = [dict(r) for r in rows][1:]
   hist.reverse()
 
@@ -545,7 +706,8 @@ def chat(p: Chat, user: dict = Depends(current_user)):
   except Exception as e:
    logger.exception("answer_math failed")
    err_result = {"success": False, "operation": None, "result": None, "steps": [],
-                 "verification": None, "response": f"I couldn't process that: {e}", "error": str(e)}
+                 "verification": None, "response": f"I couldn't process that: {e}",
+                 "error": str(e)}
    save(cid, "assistant", err_result["response"], err_result)
    q.put({"type": "result", "data": {"conversation_id": cid, **err_result}})
 
@@ -562,7 +724,7 @@ def chat(p: Chat, user: dict = Depends(current_user)):
  return StreamingResponse(
   event_generator(),
   media_type="text/event-stream",
-  headers={"X-Accel-Buffering": "no"},
+  headers={"X-Accel-Buffering": "no"},  # Prevents proxy buffering
  )
 
 
