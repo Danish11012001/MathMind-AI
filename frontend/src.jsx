@@ -1,10 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 
 const sanitizeSchema = {
     ...defaultSchema,
@@ -219,6 +218,12 @@ function renderMessage(message) {
             <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
                 rehypePlugins={[rehypeKatex]}
+                urlTransform={(url, key, node) => {
+                    if (url.startsWith("data:image/")) {
+                        return url;
+                    }
+                    return defaultUrlTransform(url, key, node);
+                }}
             >
                 {normalizeMathMarkdown(message.content)}
             </ReactMarkdown>
