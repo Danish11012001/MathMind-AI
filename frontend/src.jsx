@@ -10,17 +10,11 @@ const sanitizeSchema = {
     ...defaultSchema,
     protocols: {
         ...defaultSchema.protocols,
-        src: [...(defaultSchema.protocols?.src || []), "data"],
-    },
-    attributes: {
-        ...defaultSchema.attributes,
-        "*": [...(defaultSchema.attributes?.["*"] || []), "style", "className"],
-        span: [...(defaultSchema.attributes?.span || []), "style", "className", "aria-hidden"],
-        math: [...(defaultSchema.attributes?.math || []), "xmlns", "display"],
-        annotation: [...(defaultSchema.attributes?.annotation || []), "encoding"],
+        src: ['http', 'https', 'data'], // Explicitly allow data URLs
     },
     tagNames: [
         ...(defaultSchema.tagNames || []),
+        "img", // Explicitly allow images
         // MathML tags KaTeX outputs
         "math", "semantics", "annotation", "mrow", "mi", "mo", "mn", "ms", "mtext",
         "msup", "msub", "msubsup", "mfrac", "mspace", "mstyle", "mover", "munder",
@@ -28,8 +22,15 @@ const sanitizeSchema = {
         "menclose", "mphantom", "mpadded", "mglyph", "merror", "none", "mprescripts",
         "mmultiscripts",
     ],
+    attributes: {
+        ...defaultSchema.attributes,
+        img: ['src', 'alt', 'title', 'width', 'height', 'style', 'className'], // Force allow these attributes
+        "*": [...(defaultSchema.attributes?.["*"] || []), "style", "className"],
+        span: [...(defaultSchema.attributes?.span || []), "style", "className", "aria-hidden"],
+        math: [...(defaultSchema.attributes?.math || []), "xmlns", "display"],
+        annotation: [...(defaultSchema.attributes?.annotation || []), "encoding"],
+    },
 };
-
 import {
     Plus, MessageSquare, Trash2, Send, Sparkles, Calculator, Copy, Menu,
     Paperclip, Camera, X, LogOut, Eye, EyeOff, Loader2,
