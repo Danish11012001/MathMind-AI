@@ -777,7 +777,7 @@ def _execute_raw(p: dict) -> dict:
             plt.close()
 
             buf.seek(0)
-            b64_img = base64.b64encode(buf.read()).decode('utf-8')
+            b64_img = base64.b64encode(buf.read()).decode('utf-8').replace('\n', '')
             md_img = f"![Plot](data:image/png;base64,{b64_img})"
 
             return pack("Graph", md_img, [f"Generated graph for {inline_math(e)}."], True)

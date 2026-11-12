@@ -218,7 +218,7 @@ function renderMessage(message) {
         <div className="message-wrapper">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex, [rehypeSanitize, sanitizeSchema]]}
+                rehypePlugins={[rehypeKatex]}
             >
                 {normalizeMathMarkdown(message.content)}
             </ReactMarkdown>
