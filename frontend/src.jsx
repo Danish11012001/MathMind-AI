@@ -230,14 +230,13 @@ function normalizeMathMarkdown(content) {
     return text;
 }
 function renderMessage(message) {
-    if (message.role === "user") return message.content;
+    // Render both user and assistant messages as Markdown so LaTeX renders properly
     return (
         <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
             {normalizeMathMarkdown(message.content)}
         </ReactMarkdown>
     );
 }
-
 const isMobile = () => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 700px)").matches;
 
 function ChatApp({ user, onSignOut }) {
@@ -570,17 +569,18 @@ function ChatApp({ user, onSignOut }) {
                         msgs.map((message, index) => (
                             <article className={message.role} key={message.id || `m-${index}`}>
                                 {message.role === "assistant" && <div className="avatar"><Sparkles /></div>}
+
                                 {message.role === "user" && message.id === editingId ? (
                                     <div className="edit-card">
-                                        <textarea
-                                            value={editText}
-                                            onChange={(e) => setEditText(e.target.value)}
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
-                                                if (e.key === "Escape") { setEditingId(null); setEditText(""); }
-                                            }}
-                                            autoFocus
-                                        />
+                <textarea
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
+                        if (e.key === "Escape") { setEditingId(null); setEditText(""); }
+                    }}
+                    autoFocus
+                />
                                         <div className="edit-actions">
                                             <button className="ghost" onClick={() => { setEditingId(null); setEditText(""); }}>
                                                 Cancel
@@ -589,6 +589,32 @@ function ChatApp({ user, onSignOut }) {
                                                 <Check size={14} /> Save &amp; resend
                                             </button>
                                         </div>
+                                    </div>
+                                ) : message.role === "user" ? (
+                                    <div className="user-message-group">
+                                        <div className="bubble">
+                                            <div className="markdown-content">{renderMessage(message)}</div>
+                                        </div>
+
+                                        {/* New outer action bar for user messages */}
+                                        {message.id && !message.status && (
+                                            <div className="user-actions">
+                                                <button
+                                                    className="action-btn"
+                                                    onClick={() => navigator.clipboard.writeText(message.content)}
+                                                    title="Copy"
+                                                >
+                                                    <Copy size={13} /> Copy
+                                                </button>
+                                                <button
+                                                    className="action-btn"
+                                                    onClick={() => { setEditingId(message.id); setEditText(message.content); }}
+                                                    title="Edit & resend"
+                                                >
+                                                    <Pencil size={13} /> Edit
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
                                 ) : (
                                     <div className="bubble">
@@ -600,18 +626,9 @@ function ChatApp({ user, onSignOut }) {
                                         ) : (
                                             <div className="markdown-content">{renderMessage(message)}</div>
                                         )}
-                                        {message.role === "assistant" && !message.status && (
+                                        {!message.status && (
                                             <button className="copy" onClick={() => navigator.clipboard.writeText(message.content)}>
                                                 <Copy size={13} /> Copy
-                                            </button>
-                                        )}
-                                        {message.role === "user" && message.id && !message.status && (
-                                            <button
-                                                className="edit-msg"
-                                                title="Edit & resend"
-                                                onClick={() => { setEditingId(message.id); setEditText(message.content); }}
-                                            >
-                                                <Pencil size={13} />
                                             </button>
                                         )}
                                     </div>
