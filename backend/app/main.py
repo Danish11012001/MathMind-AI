@@ -42,9 +42,190 @@ def startup():
  init_db()
 
 
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
+# Word-export math rendering (LaTeX -> OMML)
+# =========================================================================== #
+
+OMML_NS = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+_INLINE_MATH = re.compile(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)")
+_DISPLAY_MATH = re.compile(r"\$\$([\s\S]+?)\$\$")
+
+
+def _ensure_omml_ns(xml_str: str) -> str:
+ """Make sure the fragment declares the m: and w: namespaces it uses."""
+ if "xmlns:m=" in xml_str[:400]:
+  return xml_str
+ m = re.match(r"<([\w:]+)", xml_str)
+ if not m:
+  return xml_str
+ return xml_str[:m.end()] + f' xmlns:m="{OMML_NS}" xmlns:w="{W_NS}"' + xml_str[m.end():]
+
+
+def _latex_to_omml(latex_str: str) -> str | None:
+ """Convert a LaTeX math expression to an inline <m:oMath> OMML fragment.
+
+ Returns None when the conversion packages are not installed or the
+ expression uses a construct latex2mathml cannot handle.
+ """
+ try:
+  from latex2mathml.converter import convert as latex_to_mathml
+  from mathml2omml import convert as mathml_to_omml
+ except ImportError:
+  return None
+ try:
+  mathml = latex_to_mathml(latex_str)
+  omml = mathml_to_omml(mathml)
+  if not (isinstance(omml, str) and omml.strip()):
+   return None
+  # mathml2omml may return <m:oMathPara><m:oMath>…</m:oMath></m:oMathPara>
+  # for block math. We always want the inline form so it can live inside <w:p>.
+  if "<m:oMathPara" in omml:
+   inner = re.search(r"<m:oMath[\s>][\s\S]*?</m:oMath>", omml)
+   if inner:
+    omml = inner.group(0)
+  return omml
+ except Exception:
+  logger.debug("LaTeX→OMML failed for %r", latex_str[:80], exc_info=False)
+  return None
+
+
+def _insert_omml(paragraph, omml_xml: str) -> bool:
+ """Append an OMML fragment as a child of a python-docx paragraph."""
+ from docx.oxml import parse_xml
+ try:
+  element = parse_xml(_ensure_omml_ns(omml_xml.strip()))
+  paragraph._p.append(element)
+  return True
+ except Exception:
+  logger.debug("OMML insert failed", exc_info=True)
+  return False
+
+
+_FALLBACK_SUBS = [
+ (r"\\frac\{([^{}]*)\}\{([^{}]*)\}", r"(\1)/(\2)"),
+ (r"\\sqrt\{([^{}]*)\}", r"√(\1)"),
+ (r"\\sqrt\b", "√"),
+ (r"\\pi\b", "π"), (r"\\theta\b", "θ"), (r"\\alpha\b", "α"), (r"\\beta\b", "β"),
+ (r"\\gamma\b", "γ"), (r"\\delta\b", "δ"), (r"\\epsilon\b", "ε"),
+ (r"\\lambda\b", "λ"), (r"\\mu\b", "μ"), (r"\\sigma\b", "σ"), (r"\\phi\b", "φ"),
+ (r"\\omega\b", "ω"), (r"\\Sigma\b", "Σ"), (r"\\Delta\b", "Δ"), (r"\\Omega\b", "Ω"),
+ (r"\\times\b", "×"), (r"\\div\b", "÷"), (r"\\cdot\b", "·"),
+ (r"\\pm\b", "±"), (r"\\mp\b", "∓"),
+ (r"\\leq\b|\\le\b", "≤"), (r"\\geq\b|\\ge\b", "≥"),
+ (r"\\neq\b|\\ne\b", "≠"), (r"\\approx\b", "≈"), (r"\\equiv\b", "≡"),
+ (r"\\infty\b", "∞"), (r"\\partial\b", "∂"), (r"\\nabla\b", "∇"),
+ (r"\\sum\b", "∑"), (r"\\prod\b", "∏"), (r"\\int\b", "∫"),
+ (r"\\in\b", "∈"), (r"\\notin\b", "∉"),
+ (r"\\subset\b", "⊂"), (r"\\supset\b", "⊃"),
+ (r"\\cup\b", "∪"), (r"\\cap\b", "∩"),
+ (r"\\to\b|\\rightarrow\b", "→"), (r"\\Rightarrow\b|\\implies\b", "⇒"),
+ (r"\\leftrightarrow\b", "↔"), (r"\\Leftrightarrow\b", "⇔"),
+ (r"\\forall\b", "∀"), (r"\\exists\b", "∃"),
+ (r"\\angle\b", "∠"), (r"\\perp\b", "⊥"), (r"\\parallel\b", "∥"),
+ (r"\\sin\b", "sin"), (r"\\cos\b", "cos"), (r"\\tan\b", "tan"),
+ (r"\\ln\b", "ln"), (r"\\log\b", "log"), (r"\\exp\b", "exp"),
+ (r"\\left\b", ""), (r"\\right\b", ""),
+ (r"\\[{}]", ""),
+ (r"\\,", " "), (r"\\;", " "), (r"\\!", ""),
+ (r"\\quad\b", "  "), (r"\\qquad\b", "    "),
+]
+
+
+def _latex_fallback(latex_str: str) -> str:
+ """Readable plain-text fallback when OMML libraries are not installed."""
+ s = latex_str
+ for pattern, repl in _FALLBACK_SUBS:
+  s = re.sub(pattern, repl, s)
+ s = re.sub(r"\^\{([^{}]*)\}", r"^(\1)", s)
+ s = re.sub(r"_\{([^{}]*)\}", r"_\1", s)
+ return s.strip()
+
+
+def _strip_inline_markdown(text: str) -> str:
+ text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+ text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"\1", text)
+ text = re.sub(r"`(.+?)`", r"\1", text)
+ text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+ return text
+
+
+def _add_text_run(paragraph, text: str) -> None:
+ clean = _strip_inline_markdown(text)
+ if clean:
+  paragraph.add_run(clean)
+
+
+def _fill_paragraph_with_math(paragraph, text: str) -> None:
+ """Write `text` into `paragraph`, rendering each $…$ span as inline OMML."""
+ pos = 0
+ for m in _INLINE_MATH.finditer(text):
+  if m.start() > pos:
+   _add_text_run(paragraph, text[pos:m.start()])
+  latex = m.group(1).strip()
+  omml = _latex_to_omml(latex)
+  if omml and _insert_omml(paragraph, omml):
+   pass
+  else:
+   paragraph.add_run(_latex_fallback(latex))
+  pos = m.end()
+ if pos < len(text):
+  _add_text_run(paragraph, text[pos:])
+
+
+def _write_text_block(doc, block: str) -> None:
+ """Write a paragraph-block (markdown + inline math) into the doc."""
+ for para_block in re.split(r"\n{2,}", block):
+  para_block = para_block.strip()
+  if not para_block:
+   continue
+
+  head = re.match(r"^(#{1,6})\s+(.+)$", para_block)
+  if head:
+   level = min(len(head.group(1)) + 1, 6)
+   doc.add_heading(_strip_inline_markdown(head.group(2)), level=level)
+   continue
+
+  for line in para_block.split("\n"):
+   line = line.rstrip()
+   if not line.strip():
+    continue
+   bullet = re.match(r"^[-*+]\s+(.+)$", line)
+   numbered = re.match(r"^(\d+)[.)]\s+(.+)$", line)
+   if bullet:
+    para = doc.add_paragraph(style="List Bullet")
+    _fill_paragraph_with_math(para, bullet.group(1))
+   elif numbered:
+    para = doc.add_paragraph(style="List Number")
+    _fill_paragraph_with_math(para, numbered.group(2))
+   else:
+    para = doc.add_paragraph()
+    _fill_paragraph_with_math(para, line)
+
+
+def _write_message_body(doc, content: str) -> None:
+ """Split a message into display-math blocks and text blocks, then render each."""
+ pos = 0
+ for m in _DISPLAY_MATH.finditer(content):
+  if m.start() > pos:
+   _write_text_block(doc, content[pos:m.start()])
+  latex = m.group(1).strip()
+  para = doc.add_paragraph()
+  para.alignment = 1  # center
+  omml = _latex_to_omml(latex)
+  if omml and _insert_omml(para, omml):
+   pass
+  else:
+   para.add_run(_latex_fallback(latex))
+  pos = m.end()
+ if pos < len(content):
+  _write_text_block(doc, content[pos:])
+
+
+# =========================================================================== #
 # Accounts
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
 
 class Register(BaseModel):
  email: str = Field(max_length=254)
@@ -66,7 +247,7 @@ def issue_session(c, user_id: str) -> str:
  token, token_hash = auth.new_token()
  now = datetime.now(timezone.utc)
  expires = (now + timedelta(days=auth.SESSION_DAYS)).isoformat(timespec="microseconds")
- c.execute("DELETE FROM sessions WHERE expires<?", (ts(),))  # opportunistic cleanup
+ c.execute("DELETE FROM sessions WHERE expires<?", (ts(),))
  c.execute("INSERT INTO sessions(token_hash,user_id,created,expires) VALUES(?,?,?,?)",
            (token_hash, user_id, ts(), expires))
  return token
@@ -109,7 +290,6 @@ def login(p: Login, request: Request):
   raise HTTPException(429, "Too many sign-in attempts. Please wait a few minutes and try again.")
  with connect() as c:
   row = c.execute("SELECT id,email,name,password_hash FROM users WHERE email=?", (email,)).fetchone()
-  # Always do one password hash so response time doesn't reveal whether the email exists.
   valid = auth.verify_password(p.password, row["password_hash"] if row else auth.DUMMY_HASH)
   if not row or not valid:
    raise HTTPException(401, "Incorrect email or password.")
@@ -150,9 +330,9 @@ def logout(authorization: str | None = Header(None)):
  return {"ok": True}
 
 
-# --------------------------------------------------------------------------- #
-# Conversations (always scoped to the signed-in user)
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
+# Conversations
+# =========================================================================== #
 
 class Chat(BaseModel):
  message: str = Field(min_length=1, max_length=8000)
@@ -212,9 +392,9 @@ def delete_chat(cid: str, user: dict = Depends(current_user)):
  return {"deleted": True}
 
 
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
 # Sharing
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
 
 @app.post("/api/conversations/{cid}/share")
 def share_chat(cid: str, user: dict = Depends(current_user)):
@@ -288,24 +468,7 @@ def export_chat_docx(cid: str, user: dict = Depends(current_user)):
  for row in rows:
   label = "You" if row["role"] == "user" else "MathMind"
   doc.add_heading(label, level=2)
-  for block in re.split(r"\n{2,}", row["content"] or ""):
-   block = block.strip()
-   if not block:
-    continue
-   head = re.match(r"^(#{1,6})\s+(.+)$", block)
-   if head:
-    doc.add_heading(head.group(2), level=min(len(head.group(1)) + 1, 6))
-    continue
-   for line in block.split("\n"):
-    line = line.strip()
-    if not line:
-     continue
-    if re.match(r"^[-*+]\s+", line):
-     doc.add_paragraph(line[2:], style="List Bullet")
-    elif re.match(r"^\d+[.)]\s+", line):
-     doc.add_paragraph(re.sub(r"^\d+[.)]\s+", "", line), style="List Number")
-    else:
-     doc.add_paragraph(line)
+  _write_message_body(doc, row["content"] or "")
 
  buf = BytesIO()
  doc.save(buf)
@@ -318,9 +481,9 @@ def export_chat_docx(cid: str, user: dict = Depends(current_user)):
  )
 
 
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
 # Chat streaming
-# --------------------------------------------------------------------------- #
+# =========================================================================== #
 
 def ensure(cid: str | None, user_id: str) -> str:
  with connect() as c:
