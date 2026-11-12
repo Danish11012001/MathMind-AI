@@ -95,7 +95,9 @@ def expr(value: Any) -> sp.Expr:
     value = value.strip()
     if len(value) > 1000:
         raise ValueError("Expression is too long (maximum 1000 characters).")
-    value = (value.replace("−", "-").replace("×", "*").replace("÷", "/").replace("π", "pi").replace("²", "**2").replace("³", "**3"))
+    value = (value.replace("−", "-").replace("×", "*").replace("÷", "/")
+             .replace("π", "pi").replace("²", "**2").replace("³", "**3")
+             .replace("{", "(").replace("}", ")"))
     if re.search(r"[^0-9A-Za-z_+\-*/().,^=<>!\s]", value):
         raise ValueError("Unsupported characters in the expression.")
     local_symbols = dict(SYMBOLS)
@@ -167,7 +169,7 @@ def fallback(text: str) -> dict:
     s = text.strip()
     low = s.lower()
 
-    plot_match = re.search(r"(?i)(?:plot|graph|draw)\s+(?:the\s+)?(?:function\s+)?(?:y\s*=\s*)?(.+)", s)
+    plot_match = re.search(r"(?i)(?:plot|graph|draw)\s+(?:the\s+)?(?:function\s+)?(?:of\s+)?(?:y\s*=\s*)?(.+)", s)
     if plot_match:
         raw = plot_match.group(1).strip()
         return {"category": "plotting", "operation": "plot", "expression": raw, "variable": "x"}
@@ -741,16 +743,31 @@ def _execute_raw(p: dict) -> dict:
     # --- NEW: Plotting Handler ---
     if category == "plotting" and operation == "plot":
         try:
-            raw_expr = re.sub(r"(?i)^y\s*=\s*", "", str(p.get("expression"))).strip()
+            # Clean up the string
+            raw_expr = str(p.get("expression"))
+            raw_expr = raw_expr.replace("$", "").replace("\\", "").strip()
+            raw_expr = re.sub(r"(?i)^(?:of\s+)?(?:the\s+)?(?:function\s+)?(?:y\s*=\s*)?", "", raw_expr).strip()
+
+            # Replace ^ with ** for numpy safety
+            raw_expr = raw_expr.replace("^", "**")
+
             e = expr(raw_expr)
             var = sp.Symbol(str(p.get("variable", "x")))
 
             f = sp.lambdify(var, e, modules=['numpy'])
             x_vals = np.linspace(-10, 10, 400)
-            y_vals = f(x_vals)
+
+            # Handle potential division by zero or complex numbers in the range safely
+            with np.errstate(all='ignore'):
+                y_vals = f(x_vals)
+
+            # Filter out NaNs and Infs for cleaner plotting
+            valid = np.isfinite(y_vals)
+            if not np.any(valid):
+                raise ValueError("Function returned no valid real values to plot in this range.")
 
             plt.figure(figsize=(6, 4), dpi=120)
-            plt.plot(x_vals, y_vals, color="#6d66e0", linewidth=2)
+            plt.plot(x_vals[valid], y_vals[valid], color="#6d66e0", linewidth=2)
             plt.axhline(0, color="gray", linewidth=0.8)
             plt.axvline(0, color="gray", linewidth=0.8)
             plt.grid(True, linestyle="--", alpha=0.6)
@@ -765,7 +782,12 @@ def _execute_raw(p: dict) -> dict:
 
             return pack("Graph", md_img, [f"Generated graph for {inline_math(e)}."], True)
         except Exception as err:
-            raise ValueError(f"Could not generate plot: {err}")
+            logger.error("Plotting failed: %s", err)
+            return {
+                "success": False, "operation": "plot", "result": None, "steps": [],
+                "verification": None,
+                "response": "I couldn't generate the plot. Please check the function syntax (e.g., `plot x^2 + 5`).",
+            }
     # -----------------------------
 
     if (category, operation) not in OPS:
