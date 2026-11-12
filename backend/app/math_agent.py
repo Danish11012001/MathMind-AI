@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import base64
+import io
 import json
 import logging
 import math
@@ -10,6 +12,11 @@ import statistics as _stats
 import threading
 from fractions import Fraction
 from typing import Any, Callable
+
+import matplotlib
+matplotlib.use('Agg')  # Required for Render (no GUI backend)
+import matplotlib.pyplot as plt
+import numpy as np
 
 import mpmath
 import requests
@@ -79,69 +86,40 @@ OPS = {
     ("vector", "dot"), ("vector", "cross"), ("vector", "magnitude"),
     ("vector", "angle"), ("geometry", "distance"),
     ("geometry", "midpoint"), ("optimization", "optimize"),
+    ("plotting", "plot"),
 }
 
 def expr(value: Any) -> sp.Expr:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Please provide a mathematical expression.")
-
     value = value.strip()
     if len(value) > 1000:
         raise ValueError("Expression is too long (maximum 1000 characters).")
-
-    value = (
-        value.replace("−", "-")
-        .replace("×", "*")
-        .replace("÷", "/")
-        .replace("π", "pi")
-        .replace("²", "**2")
-        .replace("³", "**3")
-    )
-
+    value = (value.replace("−", "-").replace("×", "*").replace("÷", "/").replace("π", "pi").replace("²", "**2").replace("³", "**3"))
     if re.search(r"[^0-9A-Za-z_+\-*/().,^=<>!\s]", value):
         raise ValueError("Unsupported characters in the expression.")
-
     local_symbols = dict(SYMBOLS)
-    local_symbols.update({
-        "pi": sp.pi, "e": sp.E, "sqrt": sp.sqrt,
-        "sin": sp.sin, "cos": sp.cos, "tan": sp.tan,
-        "asin": sp.asin, "acos": sp.acos, "atan": sp.atan,
-        "log": sp.log, "ln": sp.log, "exp": sp.exp,
-        "abs": sp.Abs,
-    })
-
+    local_symbols.update({"pi": sp.pi, "e": sp.E, "sqrt": sp.sqrt, "sin": sp.sin, "cos": sp.cos, "tan": sp.tan, "asin": sp.asin, "acos": sp.acos, "atan": sp.atan, "log": sp.log, "ln": sp.log, "exp": sp.exp, "abs": sp.Abs})
     allowed_names = set(local_symbols)
     identifiers = set(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", value))
     unknown = identifiers - allowed_names
     if unknown:
-        names = ", ".join(sorted(unknown))
-        raise ValueError(f"Unsupported symbol(s): {names}. Use x, y, z, or t.")
-
+        raise ValueError(f"Unsupported symbol(s): {', '.join(sorted(unknown))}. Use x, y, z, or t.")
     try:
-        return parse_expr(
-            value,
-            local_dict=local_symbols,
-            transformations=TRANSFORMATIONS,
-            evaluate=True,
-        )
+        return parse_expr(value, local_dict=local_symbols, transformations=TRANSFORMATIONS, evaluate=True)
     except (SyntaxError, TypeError, ValueError, sp.SympifyError) as error:
         raise ValueError(f"Could not parse the mathematical expression: {value}") from error
 
-
 def mat(data: Any) -> sp.Matrix:
-    if not isinstance(data, list) or not data or not all(
-            isinstance(row, list) and row for row in data
-    ):
+    if not isinstance(data, list) or not data or not all(isinstance(row, list) and row for row in data):
         raise ValueError("Matrix must be a non-empty list of rows, e.g. [[1,2],[3,4]].")
     if any(len(row) != len(data[0]) for row in data):
         raise ValueError("All matrix rows must have equal lengths.")
     if len(data) > 20 or len(data[0]) > 20:
         raise ValueError("Matrix size is limited to 20×20.")
-    if any(isinstance(v, bool) or not isinstance(v, (int, float))
-           for row in data for v in row):
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) for row in data for v in row):
         raise ValueError("Matrix entries must be numeric.")
     return sp.Matrix(data)
-
 
 def matrices(text: str) -> list[list[list[float]]]:
     found = []
@@ -154,22 +132,17 @@ def matrices(text: str) -> list[list[list[float]]]:
             pass
     return found[:2]
 
-
 def vectors(text: str) -> list[list[int | float]]:
     found = []
     pattern = r"\[(?:\s*[-+]?\d+(?:\.\d+)?\s*,?)+\]"
     for match in re.finditer(pattern, text):
         try:
             value = ast.literal_eval(match.group(0))
-            if isinstance(value, list) and value and all(
-                    isinstance(item, (int, float)) and not isinstance(item, bool)
-                    for item in value
-            ):
+            if isinstance(value, list) and value and all(isinstance(item, (int, float)) and not isinstance(item, bool) for item in value):
                 found.append(value)
         except (ValueError, SyntaxError):
             continue
     return found[:2]
-
 
 def _parse_list(value: Any, label: str = "values") -> list[sp.Expr]:
     if isinstance(value, str):
@@ -186,44 +159,34 @@ def _parse_list(value: Any, label: str = "values") -> list[sp.Expr]:
             parsed.append(sp.sympify(item))
     return parsed
 
-
 def _strip_leading(text: str, phrases: list[str]) -> str:
     pattern = r"(?is)^.*?(?:" + "|".join(phrases) + r")\s*"
     return re.sub(pattern, "", text, count=1).strip().rstrip("?.!")
 
-
 def fallback(text: str) -> dict:
     s = text.strip()
     low = s.lower()
+
+    # --- NEW: Plotting Detection ---
+    if low.startswith("plot ") or low.startswith("graph "):
+        raw = _strip_leading(s, [r"plot", r"graph"])
+        return {"category": "plotting", "operation": "plot", "expression": raw, "variable": "x"}
+    # -------------------------------
+
     ms = matrices(s)
     vecs = vectors(s)
 
-    ode_match = re.search(
-        r"(?is)(?:solve\s+)?d\s*y\s*/\s*d\s*x\s*=\s*(.+?)"
-        r"(?:[,;]\s*|\s+(?:with\s+)?)y\s*\(\s*([^)]*)\s*\)\s*=\s*([^,;?]+)\s*$",
-        s,
-    )
+    ode_match = re.search(r"(?is)(?:solve\s+)?d\s*y\s*/\s*d\s*x\s*=\s*(.+?)(?:[,;]\s*|\s+(?:with\s+)?)y\s*\(\s*([^)]*)\s*\)\s*=\s*([^,;?]+)\s*$", s)
     if ode_match:
         rhs, x0, y0 = (part.strip() for part in ode_match.groups())
-        return {
-            "category": "calculus", "operation": "ode",
-            "equation": f"dy/dx={rhs}", "variable": "x", "function": "y",
-            "ics": {"x0": x0, "y0": y0},
-        }
+        return {"category": "calculus", "operation": "ode", "equation": f"dy/dx={rhs}", "variable": "x", "function": "y", "ics": {"x0": x0, "y0": y0}}
 
-    prob_match = re.search(
-        r"(?is)exactly\s+(\d+)\s+heads.*?in\s+(\d+)\s+(?:fair\s+)?(?:coin\s+)?(?:toss(?:es)?|flip(?:s)?)",
-        s,
-    )
+    prob_match = re.search(r"(?is)exactly\s+(\d+)\s+heads.*?in\s+(\d+)\s+(?:fair\s+)?(?:coin\s+)?(?:toss(?:es)?|flip(?:s)?)", s)
     if prob_match:
         k, n = map(int, prob_match.groups())
-        return {"category": "probability", "operation": "probability",
-                "successes": k, "trials": n, "p": "1/2"}
+        return {"category": "probability", "operation": "probability", "successes": k, "trials": n, "p": "1/2"}
 
-    comb_match = re.search(
-        r"(?is)how many ways can\s+(\d+)\s+(?:people|persons|items|objects)\s+be selected from (?:a group of )?(\d+)",
-        s,
-    )
+    comb_match = re.search(r"(?is)how many ways can\s+(\d+)\s+(?:people|persons|items|objects)\s+be selected from (?:a group of )?(\d+)", s)
     if comb_match:
         r, n = map(int, comb_match.groups())
         return {"category": "combinatorics", "operation": "combinations", "n": n, "r": r}
@@ -233,56 +196,33 @@ def fallback(text: str) -> dict:
         return {"category": "combinatorics", "operation": "combinations", "n": n, "r": r}
 
     if len(vecs) >= 2 and "dot product" in low:
-        return {"category": "vector", "operation": "dot",
-                "vector_a": vecs[0], "vector_b": vecs[1],
-                "include_cross": "cross product" in low}
+        return {"category": "vector", "operation": "dot", "vector_a": vecs[0], "vector_b": vecs[1], "include_cross": "cross product" in low}
     if len(vecs) >= 2 and "cross product" in low:
-        return {"category": "vector", "operation": "cross",
-                "vector_a": vecs[0], "vector_b": vecs[1]}
+        return {"category": "vector", "operation": "cross", "vector_a": vecs[0], "vector_b": vecs[1]}
 
     if "critical point" in low:
-        fmatch = re.search(
-            r"(?is)f\s*\(\s*x\s*\)\s*=\s*(.+?)(?:\s+and\s+classify(?:\s+them)?|[?!.]?$)",
-            s,
-        )
+        fmatch = re.search(r"(?is)f\s*\(\s*x\s*\)\s*=\s*(.+?)(?:\s+and\s+classify(?:\s+them)?|[?!.]?$)", s)
         if fmatch:
-            return {"category": "optimization", "operation": "optimize",
-                    "expression": fmatch.group(1).strip(), "variable": "x", "classify": True}
+            return {"category": "optimization", "operation": "optimize", "expression": fmatch.group(1).strip(), "variable": "x", "classify": True}
 
     if "partial fraction" in low:
-        raw = _strip_leading(s, [
-            r"find the partial fraction decomposition of",
-            r"partial fraction decomposition of",
-            r"find the partial fractions of",
-            r"partial fractions of",
-        ])
-        return {"category": "algebra", "operation": "apart",
-                "expression": raw, "variable": "x"}
+        raw = _strip_leading(s, [r"find the partial fraction decomposition of", r"partial fraction decomposition of", r"find the partial fractions of", r"partial fractions of"])
+        return {"category": "algebra", "operation": "apart", "expression": raw, "variable": "x"}
 
     if "taylor" in low or "maclaurin" in low:
         fmatch = re.search(r"(?is)(?:series of|expand)\s+(.+?)\s+(?:around|at)\s+([xyzt])\s*=\s*([-+]?\d+(?:\.\d+)?)", s)
         order_match = re.search(r"(?i)(?:up to order|through order|order)\s+(\d+)", s)
         if fmatch and order_match:
-            return {"category": "calculus", "operation": "series",
-                    "expression": fmatch.group(1).strip(), "variable": fmatch.group(2),
-                    "point": fmatch.group(3), "order": int(order_match.group(1))}
+            return {"category": "calculus", "operation": "series", "expression": fmatch.group(1).strip(), "variable": fmatch.group(2), "point": fmatch.group(3), "order": int(order_match.group(1))}
 
     if len(ms) >= 2 and any(k in low for k in ("multiply", "product", "times", " by ")):
-        return {"category": "matrix", "operation": "multiply",
-                "matrix_a": ms[0], "matrix_b": ms[1]}
+        return {"category": "matrix", "operation": "multiply", "matrix_a": ms[0], "matrix_b": ms[1]}
     if len(ms) >= 2 and any(k in low for k in ("add", "sum")):
-        return {"category": "matrix", "operation": "add",
-                "matrix_a": ms[0], "matrix_b": ms[1]}
+        return {"category": "matrix", "operation": "add", "matrix_a": ms[0], "matrix_b": ms[1]}
     if len(ms) >= 2 and any(k in low for k in ("subtract", "difference")):
-        return {"category": "matrix", "operation": "subtract",
-                "matrix_a": ms[0], "matrix_b": ms[1]}
+        return {"category": "matrix", "operation": "subtract", "matrix_a": ms[0], "matrix_b": ms[1]}
 
-    matrix_keys = [
-        ("determinant", "determinant"), ("det ", "determinant"),
-        ("inverse", "inverse"), ("invert", "inverse"),
-        ("transpose", "transpose"), ("rank", "rank"),
-        ("eigenvector", "eigenvectors"), ("eigenvalue", "eigenvalues"),
-    ]
+    matrix_keys = [("determinant", "determinant"), ("det ", "determinant"), ("inverse", "inverse"), ("invert", "inverse"), ("transpose", "transpose"), ("rank", "rank"), ("eigenvector", "eigenvectors"), ("eigenvalue", "eigenvalues")]
     if ms:
         for keyword, operation in matrix_keys:
             if keyword in low:
@@ -292,76 +232,49 @@ def fallback(text: str) -> dict:
     if "prime" in low and nums and "factor" not in low:
         return {"category":"number_theory","operation":"is_prime","value":int(nums[-1])}
     if ("divisors" in low or "factors of" in low) and nums:
-        return {"category":"number_theory","operation":"divisors","value":int(nums[-1]),
-                "include_factorization": "prime factor" in low or "prime factorization" in low}
+        return {"category":"number_theory","operation":"divisors","value":int(nums[-1]), "include_factorization": "prime factor" in low or "prime factorization" in low}
     if "factorial" in low and nums:
         return {"category":"combinatorics","operation":"factorial","n":int(nums[-1])}
     if len(nums) >= 2 and any(k in low for k in ("gcd", "greatest common divisor")):
-        return {"category": "number_theory", "operation": "gcd",
-                "values": [int(n) for n in nums]}
+        return {"category": "number_theory", "operation": "gcd", "values": [int(n) for n in nums]}
     if len(nums) >= 2 and any(k in low for k in ("lcm", "least common multiple")):
-        return {"category": "number_theory", "operation": "lcm",
-                "values": [int(n) for n in nums]}
+        return {"category": "number_theory", "operation": "lcm", "values": [int(n) for n in nums]}
     if nums and "prime factor" in low:
-        return {"category": "number_theory", "operation": "prime_factors",
-                "value": int(nums[-1])}
+        return {"category": "number_theory", "operation": "prime_factors", "value": int(nums[-1])}
     if nums and any(k in low for k in ("standard deviation", "std dev")):
-        return {"category": "statistics", "operation": "standard_deviation",
-                "values": [float(n) for n in nums]}
+        return {"category": "statistics", "operation": "standard_deviation", "values": [float(n) for n in nums]}
     if nums and "variance" in low:
-        return {"category": "statistics", "operation": "variance",
-                "values": [float(n) for n in nums]}
+        return {"category": "statistics", "operation": "variance", "values": [float(n) for n in nums]}
     if nums and "median" in low:
-        return {"category": "statistics", "operation": "median",
-                "values": [float(n) for n in nums]}
+        return {"category": "statistics", "operation": "median", "values": [float(n) for n in nums]}
     if nums and ("mean" in low or "average" in low):
-        return {"category": "statistics", "operation": "mean",
-                "values": [float(n) for n in nums]}
+        return {"category": "statistics", "operation": "mean", "values": [float(n) for n in nums]}
     if nums and "mode" in low:
-        return {"category": "statistics", "operation": "mode",
-                "values": [float(n) for n in nums]}
+        return {"category": "statistics", "operation": "mode", "values": [float(n) for n in nums]}
 
     if any(k in low for k in ("partial derivative", "partial differentiation")):
-        raw = _strip_leading(s, [
-            r"partial derivative of", r"differentiate partially",
-            r"partial derivative",
-        ])
+        raw = _strip_leading(s, [r"partial derivative of", r"differentiate partially", r"partial derivative"])
         var_match = re.search(r"(?i)\b(?:with respect to|w\.r\.t\.?|by)\s+([xyzt])\b", low)
         variable = var_match.group(1) if var_match else "x"
         raw = re.sub(r"(?i)\s*(?:with respect to|w\.r\.t\.?|by)\s+[xyzt]\s*$", "", raw).strip()
-        return {"category": "calculus", "operation": "partial_derivative",
-                "expression": raw, "variable": variable}
+        return {"category": "calculus", "operation": "partial_derivative", "expression": raw, "variable": variable}
 
     if any(k in low for k in ("limit", "lim ")):
-        match = re.search(
-            r"(?i)(?:as\s+)?([xyzt])\s*(?:approaches|approach|->|→)\s*([-+\w.]+)", s
-        )
+        match = re.search(r"(?i)(?:as\s+)?([xyzt])\s*(?:approaches|approach|->|→)\s*([-+\w.]+)", s)
         raw = _strip_leading(s, [r"limit of", r"find the limit of", r"lim"])
-        raw = re.sub(
-            r"(?i)\s*(?:as\s+)?[xyzt]\s*(?:approaches|approach|->|→)\s*[-+\w.]+",
-            "", raw,
-        ).strip()
+        raw = re.sub(r"(?i)\s*(?:as\s+)?[xyzt]\s*(?:approaches|approach|->|→)\s*[-+\w.]+", "", raw).strip()
         if match:
-            return {"category": "calculus", "operation": "limit",
-                    "expression": raw, "variable": match.group(1),
-                    "point": match.group(2)}
+            return {"category": "calculus", "operation": "limit", "expression": raw, "variable": match.group(1), "point": match.group(2)}
 
     if any(k in low for k in ("derivative", "differentiate", "rate of change")):
-        raw = _strip_leading(s, [
-            r"derivative of", r"differentiate", r"find the derivative of",
-            r"rate of change of",
-        ])
+        raw = _strip_leading(s, [r"derivative of", r"differentiate", r"find the derivative of", r"rate of change of"])
         var_match = re.search(r"(?i)\b(?:with respect to|w\.r\.t\.?|by)\s+([xyzt])\b", low)
         variable = var_match.group(1) if var_match else "x"
         raw = re.sub(r"(?i)\s*(?:with respect to|w\.r\.t\.?|by)\s+[xyzt]\s*$", "", raw).strip()
-        return {"category": "calculus", "operation": "derivative",
-                "expression": raw, "variable": variable}
+        return {"category": "calculus", "operation": "derivative", "expression": raw, "variable": variable}
 
     if any(k in low for k in ("integral", "integrate", "antiderivative")):
-        raw = _strip_leading(s, [
-            r"integral of", r"integrate", r"find the integral of",
-            r"antiderivative of",
-        ])
+        raw = _strip_leading(s, [r"integral of", r"integrate", r"find the integral of", r"antiderivative of"])
         bounds = re.search(r"(?is)\s+from\s+(.+?)\s+to\s+(.+?)\s*$", raw)
         lower = upper = None
         if bounds:
@@ -370,8 +283,7 @@ def fallback(text: str) -> dict:
         var_match = re.search(r"(?i)\b(?:with respect to|w\.r\.t\.?|by)\s+([xyzt])\b", low)
         variable = var_match.group(1) if var_match else "x"
         raw = re.sub(r"(?i)\s*(?:with respect to|w\.r\.t\.?|by)\s+[xyzt]\s*$", "", raw).strip()
-        result = {"category": "calculus", "operation": "integral",
-                  "expression": raw, "variable": variable}
+        result = {"category": "calculus", "operation": "integral", "expression": raw, "variable": variable}
         if bounds:
             result.update({"lower": lower, "upper": upper})
         return result
@@ -381,26 +293,15 @@ def fallback(text: str) -> dict:
         return {"category": "algebra", "operation": "evaluate", "expression": raw}
 
     if any(k in low for k in ("factor", "factorise", "factorize")):
-        return {"category": "algebra", "operation": "factor",
-                "expression": _strip_leading(s, [r"factorise", r"factorize", r"factor"])}
+        return {"category": "algebra", "operation": "factor", "expression": _strip_leading(s, [r"factorise", r"factorize", r"factor"])}
     if any(k in low for k in ("expand", "expansion of")):
-        return {"category": "algebra", "operation": "expand",
-                "expression": _strip_leading(s, [r"expand", r"expansion of"])}
+        return {"category": "algebra", "operation": "expand", "expression": _strip_leading(s, [r"expand", r"expansion of"])}
     if any(k in low for k in ("simplify", "reduce")):
-        return {"category": "algebra", "operation": "simplify",
-                "expression": _strip_leading(s, [r"simplify", r"reduce"])}
+        return {"category": "algebra", "operation": "simplify", "expression": _strip_leading(s, [r"simplify", r"reduce"])}
 
-    if any(k in low for k in (
-            "solve", "roots of", "root of", "solution of", "solutions of",
-            "find the value of", "find x",
-    )):
-        raw = _strip_leading(s, [
-            r"solve", r"roots? of", r"solutions? of",
-            r"find the value of", r"find x",
-        ])
-        raw = re.sub(
-            r"(?i)^\s*(?:the\s+)?(?:equation|expression)\s*", "", raw
-        ).strip()
+    if any(k in low for k in ("solve", "roots of", "root of", "solution of", "solutions of", "find the value of", "find x")):
+        raw = _strip_leading(s, [r"solve", r"roots? of", r"solutions? of", r"find the value of", r"find x"])
+        raw = re.sub(r"(?i)^\s*(?:the\s+)?(?:equation|expression)\s*", "", raw).strip()
         return {"category": "equation", "operation": "solve", "expression": raw}
 
     if "is prime" in low or "prime number" in low:
@@ -418,13 +319,7 @@ def fallback(text: str) -> dict:
     if "dot product" in low and len(ms)>=2:
         return {"category":"vector","operation":"dot","vector_a":ms[0][0],"vector_b":ms[1][0]}
 
-    return {
-        "category": "unknown", "operation": "unknown",
-        "clarification": (
-            "I can help with equations, algebra, calculus, matrices, statistics, "
-            "and number theory. Please provide the expression, matrix, or numbers."
-        ),
-    }
+    return {"category": "unknown", "operation": "unknown", "clarification": ("I can help with equations, algebra, calculus, matrices, statistics, and number theory. Please provide the expression, matrix, or numbers.")}
 
 
 def plan(text: str, history: list[dict] | None = None) -> dict:
@@ -432,68 +327,19 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
     if (quick.get("category"), quick.get("operation")) in OPS:
         return quick
 
-    context = "\n".join(
-        f'{m.get("role", "")}: {m.get("content", "")}'
-        for m in (history or [])[-4:]
-    )[:1200]
-    schema = (
-        "Return only a JSON object. Do not solve. Allowed operations: "
-        "equation/solve(expression); calculus/derivative(expression,variable), "
-        "integral(expression,variable), limit(expression,variable,point), "
-        "partial_derivative(expression,variable); algebra/simplify(expression), "
-        "factor(expression), expand(expression), evaluate(expression); "
-        "matrix/determinant,inverse,transpose,rank,eigenvalues(matrix), "
-        "multiply/add/subtract(matrix_a,matrix_b); "
-        "statistics/mean,median,mode,variance,standard_deviation(values); "
-        "number_theory/gcd,lcm(values),prime_factors(value),is_prime(value),divisors(value),modular(value,modulus). "
-        "equation/solve_system(equations,variables),inequality(expression,variable). "
-        "algebra/apart(expression,variable),polynomial_division(expression,divisor,variable),polynomial_gcd(expressions,variable). "
-        "calculus/higher_derivative(expression,variable,order),series(expression,variable,point,order),"
-        "numerical_integral(expression,variable,lower,upper),ode(equation,variable),laplace(expression,variable),"
-        "inverse_laplace(expression,variable),fourier_transform(expression,variable). "
-        "matrix/solve_system(matrix,vector),eigenvectors(matrix),nullspace(matrix),rref(matrix),"
-        "diagonalize(matrix),lu_decomposition(matrix). "
-        "discrete/summation(expression,variable,lower,upper),product(expression,variable,lower,upper),"
-        "sequence(expression,variable,terms),recurrence(recurrence,initial_conditions,variable). "
-        "probability/expected_value(values,probabilities),probability(successes,trials,p),covariance(values_a,values_b),correlation(values_a,values_b). "
-        "combinatorics/permutations(n,r),combinations(n,r),factorial(n),binomial(n,r). "
-        "vector/dot(vector_a,vector_b),cross(vector_a,vector_b),magnitude(vector),angle(vector_a,vector_b); "
-        "geometry/distance(point_a,point_b),midpoint(point_a,point_b); optimization/optimize(expression,variable). "
-        "For unsupported requests use category unknown, operation unknown, clarification. "
-        "Use keys category, operation, expression, variable, point, matrix, matrix_a, "
-        "matrix_b, values, value, clarification as applicable."
-    )
+    context = "\n".join(f'{m.get("role", "")}: {m.get("content", "")}' for m in (history or [])[-4:])[:1200]
+    schema = ("Return only a JSON object. Do not solve. Allowed operations: "
+              "equation/solve(expression); calculus/derivative(expression,variable), integral(expression,variable), limit(expression,variable,point), partial_derivative(expression,variable); algebra/simplify(expression), factor(expression), expand(expression), evaluate(expression); matrix/determinant,inverse,transpose,rank,eigenvalues(matrix), multiply/add/subtract(matrix_a,matrix_b); statistics/mean,median,mode,variance,standard_deviation(values); number_theory/gcd,lcm(values),prime_factors(value),is_prime(value),divisors(value),modular(value,modulus). equation/solve_system(equations,variables),inequality(expression,variable). algebra/apart(expression,variable),polynomial_division(expression,divisor,variable),polynomial_gcd(expressions,variable). calculus/higher_derivative(expression,variable,order),series(expression,variable,point,order),numerical_integral(expression,variable,lower,upper),ode(equation,variable),laplace(expression,variable),inverse_laplace(expression,variable),fourier_transform(expression,variable). matrix/solve_system(matrix,vector),eigenvectors(matrix),nullspace(matrix),rref(matrix),diagonalize(matrix),lu_decomposition(matrix). discrete/summation(expression,variable,lower,upper),product(expression,variable,lower,upper),sequence(expression,variable,terms),recurrence(recurrence,initial_conditions,variable). probability/expected_value(values,probabilities),probability(successes,trials,p),covariance(values_a,values_b),correlation(values_a,values_b). combinatorics/permutations(n,r),combinations(n,r),factorial(n),binomial(n,r). vector/dot(vector_a,vector_b),cross(vector_a,vector_b),magnitude(vector),angle(vector_a,vector_b); geometry/distance(point_a,point_b),midpoint(point_a,point_b); optimization/optimize(expression,variable). For unsupported requests use category unknown, operation unknown, clarification. Use keys category, operation, expression, variable, point, matrix, matrix_a, matrix_b, values, value, clarification as applicable.")
     prompt = f"{schema}\nRecent context: {context}\nUser request: {text}"
     try:
         if LLM_PROVIDER == "groq":
             if not GROQ_API_KEY:
                 raise RuntimeError("GROQ_API_KEY is not configured")
-            response = requests.post(
-                GROQ_URL,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={
-                    "model": GROQ_MODEL,
-                    "messages":[
-                        {"role":"system", "content":"You are a mathematical task planner. Output valid JSON only."},
-                        {"role":"user", "content":prompt},
-                    ],
-                    "temperature":0,
-                    "max_tokens":350,
-                    "response_format":{"type":"json_object"},
-                },
-                timeout=(5, 30),
-            )
+            response = requests.post(GROQ_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}, json={"model": GROQ_MODEL, "messages":[{"role":"system", "content":"You are a mathematical task planner. Output valid JSON only."},{"role":"user", "content":prompt}], "temperature":0, "max_tokens":350, "response_format":{"type":"json_object"}}, timeout=(5, 30))
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
         elif LLM_PROVIDER == "ollama":
-            response = requests.post(
-                OLLAMA_URL,
-                json={
-                    "model": OLLAMA_MODEL, "prompt": prompt, "stream": False,
-                    "format": "json", "options": {"temperature": 0, "num_predict": 220},
-                },
-                timeout=OLLAMA_TIMEOUT,
-            )
+            response = requests.post(OLLAMA_URL, json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "format": "json", "options": {"temperature": 0, "num_predict": 220}}, timeout=OLLAMA_TIMEOUT)
             response.raise_for_status()
             content = response.json().get("response", "{}")
         else:
@@ -515,10 +361,7 @@ def display_math(value: Any) -> str:
     if isinstance(value, sp.Basic):
         replacements = {}
         for atom in value.atoms(sp.Float):
-            replacements[atom] = (
-                sp.Integer(int(atom)) if atom.is_finite and atom == int(atom)
-                else sp.Float(f"{float(atom):.10g}")
-            )
+            replacements[atom] = (sp.Integer(int(atom)) if atom.is_finite and atom == int(atom) else sp.Float(f"{float(atom):.10g}"))
         value = value.xreplace(replacements) if replacements else value
         text = sp.sstr(value)
         superscripts = str.maketrans("0123456789+-()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁽⁾")
@@ -544,24 +387,34 @@ def inline_math(value: Any) -> str:
     return f"${latex_math(value)}$"
 
 
-def pack(operation: str, result: Any, steps: list[str],
-         verified: bool | None = True) -> dict:
+def pack(operation: str, result: Any, steps: list[str], verified: bool | None = True) -> dict:
     _LOCAL.raw = result
-    shown_result = display_math(result)
-    response = f"**{operation}**\n\n**Result:** {inline_math(result)}\n\n"
+
+    # NEW: markdown-image embeds (e.g. plots) must NOT be wrapped in $...$
+    if isinstance(result, str) and result.startswith("!["):
+        shown_result = result
+        response = f"**{operation}**\n\n{result}\n\n"
+        sympy_code = None
+    else:
+        shown_result = display_math(result)
+        response = f"**{operation}**\n\n**Result:** {inline_math(result)}\n\n"
+        try:
+            sympy_code = f"import sympy as sp\nx = sp.Symbol('x')\nresult = sp.simplify({sp.sstr(result)})"
+            if isinstance(result, sp.MatrixBase):
+                sympy_code = f"import sympy as sp\nresult = sp.Matrix({result.tolist()})"
+        except Exception:
+            sympy_code = None
+
     if steps:
-        response += "\n".join(
-            f"{i + 1}. {step}" for i, step in enumerate(steps)
-        ) + "\n\n"
+        response += "\n".join(f"{i + 1}. {step}" for i, step in enumerate(steps)) + "\n\n"
     response += "**Verification:** " + (
         "PASSED" if verified else "NOT CONFIRMED" if verified is not None else "NOT CHECKED")
+
     return {
         "success": verified is not False, "operation": operation, "result": shown_result,
         "steps": steps, "verification": bool(verified) if verified is not None else None,
-        "response": response,
+        "response": response, "sympy_code": sympy_code,
     }
-
-
 def _step(text: str) -> str:
     return text
 
@@ -712,7 +565,7 @@ def _ck_matrix(p, raw):
     if op == "eigenvalues":
         n = a.rows
         return sum(raw.values()) == n and all(_tiny((a - l * sp.eye(n)).det()) for l in raw)
-    rr = raw[0] if isinstance(raw, tuple) else raw  # rref
+    rr = raw[0] if isinstance(raw, tuple) else raw
     return (rr.shape == a.shape and rr.rref()[0] == rr
             and rr.rank() == a.rank() == sp.Matrix.vstack(a, rr).rank())
 
@@ -878,12 +731,41 @@ def _llm_verify_fastpath(question: str, packed: dict) -> dict:
 
 def _execute_raw(p: dict) -> dict:
     category, operation = p.get("category"), p.get("operation")
+
+    # --- NEW: Plotting Handler ---
+    if category == "plotting" and operation == "plot":
+        try:
+            e = expr(p.get("expression"))
+            var = sp.Symbol(str(p.get("variable", "x")))
+
+            f = sp.lambdify(var, e, modules=['numpy'])
+            x_vals = np.linspace(-10, 10, 400)
+            y_vals = f(x_vals)
+
+            plt.figure(figsize=(6, 4), dpi=120)
+            plt.plot(x_vals, y_vals, color="#6d66e0", linewidth=2)
+            plt.axhline(0, color="gray", linewidth=0.8)
+            plt.axvline(0, color="gray", linewidth=0.8)
+            plt.grid(True, linestyle="--", alpha=0.6)
+
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight', transparent=True)
+            plt.close()
+
+            buf.seek(0)
+            b64_img = base64.b64encode(buf.read()).decode('utf-8')
+            md_img = f"![Plot](data:image/png;base64,{b64_img})"
+
+            return pack("Graph", md_img, [f"Generated graph for {inline_math(e)}."], True)
+        except Exception as err:
+            raise ValueError(f"Could not generate plot: {err}")
+    # -----------------------------
+
     if (category, operation) not in OPS:
         return {
             "success": False, "operation": None, "result": None, "steps": [],
             "verification": None,
-            "response": p.get("clarification") or
-                        "Please rephrase your mathematical question and include the required expression or values.",
+            "response": p.get("clarification") or "Please rephrase your mathematical question and include the required expression or values.",
         }
 
     if category == "equation" and operation == "solve_system":
@@ -1476,11 +1358,9 @@ def _normalize_math_markup(text: str) -> str:
         return "$" + body + "$"
     text = re.sub(r"\$\$(.*?)\$\$", lambda m: "$$" + clean_math_inline(m.group(1)) + "$$", text, flags=re.S)
     text = re.sub(r"(?<!\$)\$(?!\$)([^\n]+?)(?<!\$)\$(?!\$)", clean_math, text)
-    # Fix inline math with literal newlines (KaTeX breaks on these)
     def fix_inline_math(match):
         body = match.group(1)
         return "$" + body.replace("\n", " ").strip() + "$"
-
     text = re.sub(r"(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)", fix_inline_math, text)
     return text
 
@@ -1667,7 +1547,6 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
         if on_event: on_event("status", "Generating conversational reply...")
         reply = _conversational_reply(clean_text, history)
         if is_problem:
-            # A tool-free, unchecked solution must never look like a verified one.
             reply = _unverified_banner(deep_failure) + "\n\n" + reply
         return {
             "success": True, "operation": "conversation", "result": reply,

@@ -4,28 +4,37 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
+import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+
+const sanitizeSchema = {
+    ...defaultSchema,
+    protocols: {
+        ...defaultSchema.protocols,
+        src: [...(defaultSchema.protocols?.src || []), "data"],
+    },
+    attributes: {
+        ...defaultSchema.attributes,
+        "*": [...(defaultSchema.attributes?.["*"] || []), "style", "className"],
+        span: [...(defaultSchema.attributes?.span || []), "style", "className", "aria-hidden"],
+        math: [...(defaultSchema.attributes?.math || []), "xmlns", "display"],
+        annotation: [...(defaultSchema.attributes?.annotation || []), "encoding"],
+    },
+    tagNames: [
+        ...(defaultSchema.tagNames || []),
+        // MathML tags KaTeX outputs
+        "math", "semantics", "annotation", "mrow", "mi", "mo", "mn", "ms", "mtext",
+        "msup", "msub", "msubsup", "mfrac", "mspace", "mstyle", "mover", "munder",
+        "munderover", "msqrt", "mroot", "mtable", "mtr", "mtd", "mlabeledtr",
+        "menclose", "mphantom", "mpadded", "mglyph", "merror", "none", "mprescripts",
+        "mmultiscripts",
+    ],
+};
 
 import {
-    Plus,
-    MessageSquare,
-    Trash2,
-    Send,
-    Sparkles,
-    Calculator,
-    Copy,
-    Menu,
-    Paperclip,
-    Camera,
-    X,
-    LogOut,
-    Eye,
-    EyeOff,
-    Loader2,
-    Share2,
-    Download,
-    Pencil,
-    Check,
-    Link2,
+    Plus, MessageSquare, Trash2, Send, Sparkles, Calculator, Copy, Menu,
+    Paperclip, Camera, X, LogOut, Eye, EyeOff, Loader2,
+    Share2, Download, Pencil, Check, Link2,
+    Mic, Square, Printer
 } from "lucide-react";
 
 import "katex/dist/katex.min.css";
@@ -33,44 +42,31 @@ import "./style.css";
 
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const TOKEN_KEY = "mathmind_token";
-
 const ACCEPT = "image/*,.pdf,.txt,.md,.tex,.csv,.docx";
 const MAX_FILES = 5;
 const MAX_MB = 10;
 
 function getToken() {
-    try {
-        return localStorage.getItem(TOKEN_KEY);
-    } catch {
-        return window.__mathmindToken || null;
-    }
+    try { return localStorage.getItem(TOKEN_KEY); } catch { return window.__mathmindToken || null; }
 }
-
 function setToken(token) {
     try {
         if (token) localStorage.setItem(TOKEN_KEY, token);
         else localStorage.removeItem(TOKEN_KEY);
-    } catch {
-        window.__mathmindToken = token || null;
-    }
+    } catch { window.__mathmindToken = token || null; }
 }
 
 async function apiFetch(path, options = {}) {
     const token = getToken();
     const response = await fetch(`${API}${path}`, {
         ...options,
-        headers: {
-            ...(options.headers || {}),
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { ...(options.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
-
     const isAuthCall = path.startsWith("/api/auth/login") || path.startsWith("/api/auth/register");
     if (response.status === 401 && !isAuthCall) {
         setToken(null);
         window.dispatchEvent(new Event("mathmind:signed-out"));
     }
-
     return response;
 }
 
@@ -87,6 +83,29 @@ function getShareToken() {
     return fromPath ? fromPath[1] : null;
 }
 
+const MATH_KEYS = [
+    { label: "∫", val: "\\int_{0}^{\\infty} " },
+    { label: "√", val: "\\sqrt{}" },
+    { label: "a/b", val: "\\frac{}{}" },
+    { label: "x²", val: "^2" },
+    { label: "π", val: "\\pi" },
+    { label: "Σ", val: "\\sum_{i=1}^{n} " },
+    { label: "lim", val: "\\lim_{x \\to 0} " },
+    { label: "θ", val: "\\theta" },
+];
+
+function MathKeyboard({ onInsert }) {
+    return (
+        <div className="math-keyboard">
+            {MATH_KEYS.map((k) => (
+                <button key={k.label} type="button" onClick={() => onInsert(k.val)} title={k.val}>
+                    {k.label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
 function AuthScreen({ onAuth, notice }) {
     const [mode, setMode] = useState("signin");
     const [email, setEmail] = useState("");
@@ -95,33 +114,20 @@ function AuthScreen({ onAuth, notice }) {
     const [show, setShow] = useState(false);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState("");
-
     const signup = mode === "signup";
 
     async function submit(event) {
         event.preventDefault();
         setError("");
         const cleanEmail = email.trim();
-
-        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) {
-            setError("Enter a valid email address.");
-            return;
-        }
-        if (signup && password.length < 8) {
-            setError("Password must be at least 8 characters.");
-            return;
-        }
-
+        if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(cleanEmail)) { setError("Enter a valid email address."); return; }
+        if (signup && password.length < 8) { setError("Password must be at least 8 characters."); return; }
         setBusy(true);
         try {
             const response = await apiFetch(`/api/auth/${signup ? "register" : "login"}`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    email: cleanEmail,
-                    password,
-                    ...(signup && name.trim() ? { name: name.trim() } : {}),
-                }),
+                body: JSON.stringify({ email: cleanEmail, password, ...(signup && name.trim() ? { name: name.trim() } : {}) }),
             });
             const data = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(errorText(data.detail, "Something went wrong. Please try again."));
@@ -137,20 +143,12 @@ function AuthScreen({ onAuth, notice }) {
     return (
         <div className="auth">
             <form className="auth-card" onSubmit={submit} noValidate>
-                <div className="mark">
-                    <Calculator />
-                </div>
+                <div className="mark"><Calculator /></div>
                 <h1>{signup ? "Create your account" : "Welcome back"}</h1>
-                <p className="sub">
-                    {signup ? "Save your chats and pick up on any device." : "Sign in to open your MathMind chats."}
-                </p>
+                <p className="sub">{signup ? "Save your chats and pick up on any device." : "Sign in to open your MathMind chats."}</p>
                 <div className="tabs" role="tablist">
-                    <button type="button" className={!signup ? "on" : ""} onClick={() => { setMode("signin"); setError(""); }}>
-                        Sign in
-                    </button>
-                    <button type="button" className={signup ? "on" : ""} onClick={() => { setMode("signup"); setError(""); }}>
-                        Create account
-                    </button>
+                    <button type="button" className={!signup ? "on" : ""} onClick={() => { setMode("signin"); setError(""); }}>Sign in</button>
+                    <button type="button" className={signup ? "on" : ""} onClick={() => { setMode("signup"); setError(""); }}>Create account</button>
                 </div>
                 {notice && <p className="auth-notice">{notice}</p>}
                 {error && <p className="auth-error" role="alert">{error}</p>}
@@ -183,18 +181,14 @@ function AuthScreen({ onAuth, notice }) {
     );
 }
 
-// Unwrap \boxed{...} (balanced braces). KaTeX draws it with CSS borders that can
-// render as a stray vertical bar when global CSS interferes with .fbox.
 function unwrapBoxed(text) {
     const key = "\\boxed{";
-    let out = "";
-    let i = 0;
+    let out = ""; let i = 0;
     while (i < text.length) {
         const at = text.indexOf(key, i);
         if (at === -1) { out += text.slice(i); break; }
         out += text.slice(i, at);
-        let depth = 1;
-        let j = at + key.length;
+        let depth = 1; let j = at + key.length;
         while (j < text.length && depth > 0) {
             if (text[j] === "{") depth++;
             else if (text[j] === "}") depth--;
@@ -209,32 +203,31 @@ function unwrapBoxed(text) {
 
 function normalizeMathMarkdown(content) {
     let text = unwrapBoxed(String(content || ""));
-
-    // 1. Convert \[ ... \] to $$ ... $$
-    text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => {
-        return `\n$$\n${inner.trim()}\n$$\n`;
-    });
-
-    // 2. Convert \( ... \) to $ ... $
-    text = text.replace(/\\\(([\s\S]*?)\\\)/g, (match, inner) => {
-        return `$${inner.replace(/\n/g, ' ').trim()}$`;
-    });
-
-    // 3. Clean up stray newlines inside inline math $ ... $
+    text = text.replace(/\\\[([\s\S]*?)\\\]/g, (match, inner) => `\n$$\n${inner.trim()}\n$$\n`);
+    text = text.replace(/\\\(([\s\S]*?)\\\)/g, (match, inner) => `$${inner.replace(/\n/g, ' ').trim()}$`);
     text = text.replace(/(?<!\$)\$(?!\$)([^$]+?)(?<!\$)\$(?!\$)/g, (match, inner) => {
-        // Only replace newlines if it's not a complex aligned block
         if (inner.includes("\\begin")) return match;
         return `$${inner.replace(/\n/g, ' ').trim()}$`;
     });
-
     return text;
 }
+
 function renderMessage(message) {
-    // Render both user and assistant messages as Markdown so LaTeX renders properly
     return (
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-            {normalizeMathMarkdown(message.content)}
-        </ReactMarkdown>
+        <div className="message-wrapper">
+            <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex, [rehypeSanitize, sanitizeSchema]]}
+            >
+                {normalizeMathMarkdown(message.content)}
+            </ReactMarkdown>
+            {message.metadata?.sympy_code && (
+                <details className="sympy-details">
+                    <summary>Show Computer Verification (SymPy)</summary>
+                    <pre><code>{message.metadata.sympy_code}</code></pre>
+                </details>
+            )}
+        </div>
     );
 }
 const isMobile = () => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 700px)").matches;
@@ -251,10 +244,13 @@ function ChatApp({ user, onSignOut }) {
     const [hint, setHint] = useState("");
     const [dragging, setDragging] = useState(false);
 
-    // New state for edit + share features
     const [editingId, setEditingId] = useState(null);
     const [editText, setEditText] = useState("");
     const [shareUrl, setShareUrl] = useState("");
+
+    const [isRecording, setIsRecording] = useState(false);
+    const mediaRecorderRef = useRef(null);
+    const audioChunksRef = useRef([]);
 
     const end = useRef(null);
     const input = useRef(null);
@@ -281,9 +277,7 @@ function ChatApp({ user, onSignOut }) {
             const data = await response.json();
             setChats(data);
             if (data.length && !cid) await open(data[0].id);
-        } catch {
-            setErr("Backend unavailable. Please try again shortly.");
-        }
+        } catch { setErr("Backend unavailable. Please try again shortly."); }
     }
 
     async function open(id) {
@@ -293,16 +287,9 @@ function ChatApp({ user, onSignOut }) {
             const data = await response.json();
             setCid(id);
             if (isMobile()) setSide(false);
-            setMsgs(data.messages.map((m) => ({
-                id: m.id,
-                role: m.role,
-                content: m.content,
-                metadata: m.metadata,
-            })));
+            setMsgs(data.messages.map((m) => ({ id: m.id, role: m.role, content: m.content, metadata: m.metadata })));
             setErr("");
-        } catch {
-            setErr("Unable to open conversation.");
-        }
+        } catch { setErr("Unable to open conversation."); }
     }
 
     function fresh() {
@@ -315,19 +302,14 @@ function ChatApp({ user, onSignOut }) {
     async function sendMessage(question, replaceFrom = null) {
         if (!question || busy || reading) return;
 
-        setErr("");
-        setHint("");
+        setErr(""); setHint("");
         setMsgs((prev) => {
             let base = prev;
             if (replaceFrom != null) {
                 const idx = prev.findIndex((m) => m.id === replaceFrom);
                 if (idx !== -1) base = prev.slice(0, idx);
             }
-            return [
-                ...base,
-                { role: "user", content: question },
-                { role: "assistant", content: "", status: "Thinking..." },
-            ];
+            return [...base, { role: "user", content: question }, { role: "assistant", content: "", status: "Thinking..." }];
         });
         setBusy(true);
 
@@ -353,7 +335,6 @@ function ChatApp({ user, onSignOut }) {
             while (true) {
                 const { value, done } = await reader.read();
                 if (done) break;
-
                 partialData += decoder.decode(value, { stream: true });
                 const lines = partialData.split("\n\n");
                 partialData = lines.pop() || "";
@@ -366,9 +347,7 @@ function ChatApp({ user, onSignOut }) {
                         setMsgs((messages) => {
                             const next = [...messages];
                             const last = next[next.length - 1];
-                            if (last.role === "assistant" && last.status !== undefined) {
-                                last.status = event.content;
-                            }
+                            if (last.role === "assistant" && last.status !== undefined) last.status = event.content;
                             return next;
                         });
                     } else if (event.type === "result") {
@@ -396,9 +375,7 @@ function ChatApp({ user, onSignOut }) {
                 const last = next[next.length - 1];
                 if (last.role === "assistant" && last.status) {
                     delete last.status;
-                    last.content = offline
-                        ? "Could not reach the server. Please check your connection and try again."
-                        : error.message;
+                    last.content = offline ? "Could not reach the server. Please check your connection and try again." : error.message;
                 }
                 return next;
             });
@@ -422,9 +399,45 @@ function ChatApp({ user, onSignOut }) {
         const next = editText.trim();
         if (!next || editingId == null) return;
         const id = editingId;
-        setEditingId(null);
-        setEditText("");
+        setEditingId(null); setEditText("");
         sendMessage(next, id);
+    }
+
+    function insertMath(val) {
+        setText((prev) => prev + val);
+        input.current?.focus();
+    }
+
+    async function toggleRecording() {
+        if (isRecording) {
+            mediaRecorderRef.current.stop();
+            setIsRecording(false);
+            return;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorderRef.current = new MediaRecorder(stream);
+            audioChunksRef.current = [];
+
+            mediaRecorderRef.current.ondataavailable = (e) => {
+                if (e.data.size > 0) audioChunksRef.current.push(e.data);
+            };
+
+            mediaRecorderRef.current.onstop = async () => {
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+                const formData = new FormData();
+                formData.append("file", audioBlob, "voice.webm");
+                setHint("Transcribing audio...");
+                try {
+                    const res = await apiFetch("/api/transcribe", { method: "POST", body: formData });
+                    const data = await res.json();
+                    if (data.text) setText((prev) => prev + " " + data.text);
+                } catch (err) { setErr("Failed to transcribe audio."); } finally { setHint(""); }
+            };
+
+            mediaRecorderRef.current.start();
+            setIsRecording(true);
+        } catch (err) { setErr("Microphone access denied."); }
     }
 
     async function shareChat() {
@@ -434,9 +447,7 @@ function ChatApp({ user, onSignOut }) {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(errorText(data.detail, "Could not create a share link."));
             setShareUrl(`${window.location.origin}/#share/${data.token}`);
-        } catch (e) {
-            setErr(e.message || "Could not create a share link.");
-        }
+        } catch (e) { setErr(e.message || "Could not create a share link."); }
     }
 
     async function del(id, event) {
@@ -447,9 +458,7 @@ function ChatApp({ user, onSignOut }) {
             if (!response.ok) throw new Error("Unable to delete conversation.");
             if (id === cid) fresh();
             await load();
-        } catch {
-            setErr("Unable to delete conversation.");
-        }
+        } catch { setErr("Unable to delete conversation."); }
     }
 
     async function addFiles(fileList) {
@@ -524,6 +533,9 @@ function ChatApp({ user, onSignOut }) {
                     <Sparkles /> Mathematical AI <span>AI + SymPy</span>
                     {cid && (
                         <div className="header-actions">
+                            <button className="header-btn" onClick={() => window.print()} title="Print / Save as PDF">
+                                <Printer size={16} />
+                            </button>
                             <button className="header-btn" onClick={shareChat} title="Share chat">
                                 <Share2 size={16} />
                             </button>
@@ -532,16 +544,11 @@ function ChatApp({ user, onSignOut }) {
                                 title="Download as Word"
                                 onClick={() =>
                                     apiFetch(`/api/conversations/${cid}/export.docx`)
-                                        .then(async (r) => {
-                                            if (!r.ok) throw new Error("Download failed");
-                                            return r.blob();
-                                        })
+                                        .then(async (r) => { if (!r.ok) throw new Error("Download failed"); return r.blob(); })
                                         .then((blob) => {
                                             const url = URL.createObjectURL(blob);
                                             const a = document.createElement("a");
-                                            a.href = url;
-                                            a.download = "mathmind-chat.docx";
-                                            a.click();
+                                            a.href = url; a.download = "mathmind-chat.docx"; a.click();
                                             URL.revokeObjectURL(url);
                                         })
                                         .catch(() => setErr("Could not download the document."))
@@ -560,7 +567,7 @@ function ChatApp({ user, onSignOut }) {
                             <h1>What math can we solve?</h1>
                             <p>Type a problem, or attach a photo, handwritten page, PDF or document. I'll calculate with SymPy, explain the steps and verify the result.</p>
                             <div className="examples">
-                                {["Solve x**2 - 5*x + 6", "Derivative of x**3 + 2*x", "Integrate x**2 + 3*x", "Determinant of [[5,2],[1,3]]"].map((example) => (
+                                {["Solve x**2 - 5*x + 6", "Plot x**3 - 2*x", "Integrate x**2 + 3*x", "Determinant of [[5,2],[1,3]]"].map((example) => (
                                     <button key={example} onClick={() => { setText(example); input.current?.focus(); }}>{example} ↗</button>
                                 ))}
                             </div>
@@ -569,25 +576,17 @@ function ChatApp({ user, onSignOut }) {
                         msgs.map((message, index) => (
                             <article className={message.role} key={message.id || `m-${index}`}>
                                 {message.role === "assistant" && <div className="avatar"><Sparkles /></div>}
-
                                 {message.role === "user" && message.id === editingId ? (
                                     <div className="edit-card">
-                <textarea
-                    value={editText}
-                    onChange={(e) => setEditText(e.target.value)}
-                    onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
-                        if (e.key === "Escape") { setEditingId(null); setEditText(""); }
-                    }}
-                    autoFocus
-                />
+                                        <textarea value={editText} onChange={(e) => setEditText(e.target.value)} autoFocus
+                                                  onKeyDown={(e) => {
+                                                      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitEdit(); }
+                                                      if (e.key === "Escape") { setEditingId(null); setEditText(""); }
+                                                  }}
+                                        />
                                         <div className="edit-actions">
-                                            <button className="ghost" onClick={() => { setEditingId(null); setEditText(""); }}>
-                                                Cancel
-                                            </button>
-                                            <button className="primary-mini" onClick={submitEdit} disabled={!editText.trim()}>
-                                                <Check size={14} /> Save &amp; resend
-                                            </button>
+                                            <button className="ghost" onClick={() => { setEditingId(null); setEditText(""); }}>Cancel</button>
+                                            <button className="primary-mini" onClick={submitEdit} disabled={!editText.trim()}><Check size={14} /> Save &amp; resend</button>
                                         </div>
                                     </div>
                                 ) : message.role === "user" ? (
@@ -595,41 +594,22 @@ function ChatApp({ user, onSignOut }) {
                                         <div className="bubble">
                                             <div className="markdown-content">{renderMessage(message)}</div>
                                         </div>
-
-                                        {/* New outer action bar for user messages */}
                                         {message.id && !message.status && (
                                             <div className="user-actions">
-                                                <button
-                                                    className="action-btn"
-                                                    onClick={() => navigator.clipboard.writeText(message.content)}
-                                                    title="Copy"
-                                                >
-                                                    <Copy size={13} /> Copy
-                                                </button>
-                                                <button
-                                                    className="action-btn"
-                                                    onClick={() => { setEditingId(message.id); setEditText(message.content); }}
-                                                    title="Edit & resend"
-                                                >
-                                                    <Pencil size={13} /> Edit
-                                                </button>
+                                                <button className="action-btn" onClick={() => navigator.clipboard.writeText(message.content)} title="Copy"><Copy size={13} /> Copy</button>
+                                                <button className="action-btn" onClick={() => { setEditingId(message.id); setEditText(message.content); }} title="Edit & resend"><Pencil size={13} /> Edit</button>
                                             </div>
                                         )}
                                     </div>
                                 ) : (
                                     <div className="bubble">
                                         {message.status ? (
-                                            <div className="agent-status">
-                                                <Loader2 size={16} className="spin" />
-                                                <span>{message.status}</span>
-                                            </div>
+                                            <div className="agent-status"><Loader2 size={16} className="spin" /><span>{message.status}</span></div>
                                         ) : (
                                             <div className="markdown-content">{renderMessage(message)}</div>
                                         )}
                                         {!message.status && (
-                                            <button className="copy" onClick={() => navigator.clipboard.writeText(message.content)}>
-                                                <Copy size={13} /> Copy
-                                            </button>
+                                            <button className="copy" onClick={() => navigator.clipboard.writeText(message.content)}><Copy size={13} /> Copy</button>
                                         )}
                                     </div>
                                 )}
@@ -642,12 +622,13 @@ function ChatApp({ user, onSignOut }) {
                 <div className={`compose ${dragging ? "dragging" : ""}`} onDragOver={(e) => { e.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(e) => { e.preventDefault(); setDragging(false); addFiles(e.dataTransfer.files); }}>
                     {err && <p className="error">{err}</p>}
                     {hint && <p className="hint">{hint}</p>}
+
+                    <MathKeyboard onInsert={insertMath} />
+
                     {text.trim().length > 0 && (text.includes("$") || text.includes("\\") || text.includes("^") || text.includes("sqrt")) && (
                         <div className="math-preview">
                             <small>Math Preview:</small>
-                            <div className="markdown-content">
-                                {renderMessage({ role: "assistant", content: text })}
-                            </div>
+                            <div className="markdown-content">{renderMessage({ role: "assistant", content: text })}</div>
                         </div>
                     )}
                     {files.length > 0 && (
@@ -666,13 +647,16 @@ function ChatApp({ user, onSignOut }) {
                         <input ref={cameraInput} type="file" accept="image/*" capture="environment" hidden onChange={pickFiles} />
                         <button type="button" className="icon" onClick={() => fileInput.current?.click()} title="Attach a photo, PDF or document"><Paperclip /></button>
                         <button type="button" className="icon" onClick={() => cameraInput.current?.click()} title="Take a photo of a problem"><Camera /></button>
-                        <textarea ref={input} value={text} onChange={(e) => setText(e.target.value)} placeholder="Message MathMind, or attach a photo or file…" rows="1"
+                        <button type="button" className={`icon ${isRecording ? "recording" : ""}`} onClick={toggleRecording} title="Voice Input">
+                            {isRecording ? <Square size={18} /> : <Mic />}
+                        </button>
+                        <textarea ref={input} value={text} onChange={(e) => setText(e.target.value)} placeholder="Message MathMind…" rows="1"
                                   onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
                                   onPaste={(e) => { const pasted = Array.from(e.clipboardData?.files || []); if (pasted.length) { e.preventDefault(); addFiles(pasted); } }}
                         />
                         <button className="send" disabled={!text.trim() || busy || reading} aria-label="Send"><Send /></button>
                     </form>
-                    <small>Enter to send · Shift+Enter for newline · Paste or drop images and files · Verify important results</small>
+                    <small>Enter to send · Shift+Enter for newline · Paste or drop images and files</small>
                 </div>
             </main>
 
@@ -683,21 +667,14 @@ function ChatApp({ user, onSignOut }) {
                         <p>Anyone with the link can view the conversation. Revoke it anytime.</p>
                         <div className="share-row">
                             <input readOnly value={shareUrl} onFocus={(e) => e.target.select()} />
-                            <button className="primary-mini" onClick={() => navigator.clipboard.writeText(shareUrl)}>
-                                <Link2 size={14} /> Copy
-                            </button>
+                            <button className="primary-mini" onClick={() => navigator.clipboard.writeText(shareUrl)}><Link2 size={14} /> Copy</button>
                         </div>
                         <div className="share-row">
                             <button className="ghost" onClick={() => setShareUrl("")}>Close</button>
-                            <button
-                                className="ghost danger"
-                                onClick={async () => {
-                                    await apiFetch(`/api/conversations/${cid}/share`, { method: "DELETE" });
-                                    setShareUrl("");
-                                }}
-                            >
-                                Revoke link
-                            </button>
+                            <button className="ghost danger" onClick={async () => {
+                                await apiFetch(`/api/conversations/${cid}/share`, { method: "DELETE" });
+                                setShareUrl("");
+                            }}>Revoke link</button>
                         </div>
                     </div>
                 </div>
@@ -717,22 +694,11 @@ function SharedView({ token }) {
                 const json = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(errorText(json.detail, "This share link is unavailable."));
                 setData(json);
-            } catch (e) {
-                setError(e instanceof TypeError ? "Can't reach the server." : e.message);
-            }
+            } catch (e) { setError(e instanceof TypeError ? "Can't reach the server." : e.message); }
         })();
     }, [token]);
 
-    if (error) {
-        return (
-            <div className="shared-page">
-                <div className="shared-error">
-                    <p className="error">{error}</p>
-                    <a href="/" className="shared-home">← Back to MathMind</a>
-                </div>
-            </div>
-        );
-    }
+    if (error) return <div className="shared-page"><div className="shared-error"><p className="error">{error}</p><a href="/" className="shared-home">← Back to MathMind</a></div></div>;
     if (!data) return <div className="splash"><Loader2 className="spin" /></div>;
 
     return (
@@ -746,9 +712,7 @@ function SharedView({ token }) {
                 {data.messages.map((m, i) => (
                     <article className={m.role} key={i}>
                         {m.role === "assistant" && <div className="avatar"><Sparkles /></div>}
-                        <div className="bubble">
-                            <div className="markdown-content">{renderMessage(m)}</div>
-                        </div>
+                        <div className="bubble"><div className="markdown-content">{renderMessage(m)}</div></div>
                     </article>
                 ))}
             </main>
@@ -771,24 +735,20 @@ function AuthedApp() {
         let alive = true;
         const signedOut = () => { setUser(null); setNotice("Your session ended. Please sign in again."); };
         window.addEventListener("mathmind:signed-out", signedOut);
-
         (async () => {
             if (getToken()) {
                 try {
                     const response = await apiFetch("/api/auth/me");
                     if (response.ok && alive) setUser(await response.json());
-                } catch {
-                    if (alive) setNotice("Can't reach the server right now. Please try again shortly.");
-                }
+                } catch { if (alive) setNotice("Can't reach the server right now. Please try again shortly."); }
             }
             if (alive) setReady(true);
         })();
-
         return () => { alive = false; window.removeEventListener("mathmind:signed-out", signedOut); };
     }, []);
 
     async function signOut() {
-        try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { /* ignore */ }
+        try { await apiFetch("/api/auth/logout", { method: "POST" }); } catch { }
         setToken(null); setNotice(""); setUser(null);
     }
 
