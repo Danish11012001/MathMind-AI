@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
@@ -217,13 +217,8 @@ function renderMessage(message) {
         <div className="message-wrapper">
             <ReactMarkdown
                 remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
-                urlTransform={(url, key, node) => {
-                    if (url.startsWith("data:image/")) {
-                        return url;
-                    }
-                    return defaultUrlTransform(url, key, node);
-                }}
+                rehypePlugins={[rehypeKatex]} // Add rehypeSanitize here if you want, but it's optional
+                urlTransform={(url) => url}   // <--- THIS IS THE FIX
             >
                 {normalizeMathMarkdown(message.content)}
             </ReactMarkdown>
