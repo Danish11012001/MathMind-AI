@@ -167,6 +167,11 @@ def fallback(text: str) -> dict:
     s = text.strip()
     low = s.lower()
 
+    plot_match = re.search(r"(?i)(?:plot|graph|draw)\s+(?:the\s+)?(?:function\s+)?(?:y\s*=\s*)?(.+)", s)
+    if plot_match:
+        raw = plot_match.group(1).strip()
+        return {"category": "plotting", "operation": "plot", "expression": raw, "variable": "x"}
+
     # --- NEW: Plotting Detection ---
     if low.startswith("plot ") or low.startswith("graph "):
         raw = _strip_leading(s, [r"plot", r"graph"])
@@ -329,6 +334,7 @@ def plan(text: str, history: list[dict] | None = None) -> dict:
 
     context = "\n".join(f'{m.get("role", "")}: {m.get("content", "")}' for m in (history or [])[-4:])[:1200]
     schema = ("Return only a JSON object. Do not solve. Allowed operations: "
+              "plotting/plot(expression); "  # <--- ADD THIS HERE
               "equation/solve(expression); calculus/derivative(expression,variable), integral(expression,variable), limit(expression,variable,point), partial_derivative(expression,variable); algebra/simplify(expression), factor(expression), expand(expression), evaluate(expression); matrix/determinant,inverse,transpose,rank,eigenvalues(matrix), multiply/add/subtract(matrix_a,matrix_b); statistics/mean,median,mode,variance,standard_deviation(values); number_theory/gcd,lcm(values),prime_factors(value),is_prime(value),divisors(value),modular(value,modulus). equation/solve_system(equations,variables),inequality(expression,variable). algebra/apart(expression,variable),polynomial_division(expression,divisor,variable),polynomial_gcd(expressions,variable). calculus/higher_derivative(expression,variable,order),series(expression,variable,point,order),numerical_integral(expression,variable,lower,upper),ode(equation,variable),laplace(expression,variable),inverse_laplace(expression,variable),fourier_transform(expression,variable). matrix/solve_system(matrix,vector),eigenvectors(matrix),nullspace(matrix),rref(matrix),diagonalize(matrix),lu_decomposition(matrix). discrete/summation(expression,variable,lower,upper),product(expression,variable,lower,upper),sequence(expression,variable,terms),recurrence(recurrence,initial_conditions,variable). probability/expected_value(values,probabilities),probability(successes,trials,p),covariance(values_a,values_b),correlation(values_a,values_b). combinatorics/permutations(n,r),combinations(n,r),factorial(n),binomial(n,r). vector/dot(vector_a,vector_b),cross(vector_a,vector_b),magnitude(vector),angle(vector_a,vector_b); geometry/distance(point_a,point_b),midpoint(point_a,point_b); optimization/optimize(expression,variable). For unsupported requests use category unknown, operation unknown, clarification. Use keys category, operation, expression, variable, point, matrix, matrix_a, matrix_b, values, value, clarification as applicable.")
     prompt = f"{schema}\nRecent context: {context}\nUser request: {text}"
     try:
@@ -735,7 +741,8 @@ def _execute_raw(p: dict) -> dict:
     # --- NEW: Plotting Handler ---
     if category == "plotting" and operation == "plot":
         try:
-            e = expr(p.get("expression"))
+            raw_expr = re.sub(r"(?i)^y\s*=\s*", "", str(p.get("expression"))).strip()
+            e = expr(raw_expr)
             var = sp.Symbol(str(p.get("variable", "x")))
 
             f = sp.lambdify(var, e, modules=['numpy'])
@@ -1288,6 +1295,14 @@ def _fix_display_math(text: str) -> str:
 def _normalize_math_markup(text: str) -> str:
     if not text:
         return text
+
+    def clean_code_blocks(match):
+        lang = match.group(1)
+        code = match.group(2)
+        code = code.replace("$$", "").replace("$", "")
+        return f"```{lang}\n{code}\n```"
+    text = re.sub(r"```([a-zA-Z]*)\n([\s\S]*?)\n```", clean_code_blocks, text)
+
     text = _fix_display_math(text)
     text = re.sub(r"\\\(([^\n]*?)\\\)", lambda m: "$" + m.group(1).strip() + "$", text)
     text = re.sub(
