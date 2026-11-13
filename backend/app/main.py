@@ -19,7 +19,7 @@ load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import auth
@@ -32,6 +32,15 @@ app = FastAPI(title="Mathematical AI Reasoning Agent")
 cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=cors_origins, allow_methods=["*"], allow_headers=["*"])
 limiter = auth.RateLimiter()
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+ logger.error(f"Unhandled backend error: {exc}", exc_info=True)
+ return JSONResponse(
+  status_code=500,
+  content={"detail": "Something went wrong on my end. Please try again in a moment!"}
+ )
 
 
 def ts() -> str:
@@ -311,7 +320,7 @@ def login(p: Login, request: Request):
  except ValueError:
   raise HTTPException(401, "Incorrect email or password.")
  if not (limiter.allow(f"login-ip:{client_ip(request)}", 30, 600) and limiter.allow(f"login:{email}", 8, 600)):
-  raise HTTPException(429, "Too many sign-in attempts. Please wait a few minutes and try again.")
+  raise HTTPException(429, "Too many attempts. Please take a short break and try again.")
  with connect() as c:
   row = c.execute("SELECT id,email,name,password_hash FROM users WHERE email=?", (email,)).fetchone()
   valid = auth.verify_password(p.password, row["password_hash"] if row else auth.DUMMY_HASH)
@@ -482,7 +491,7 @@ def save(cid: str, role: str, text: str, meta: dict | None = None) -> None:
 @app.post("/api/chat")
 def chat(p: Chat, user: dict = Depends(current_user)):
  if not limiter.allow(f"chat:{user['id']}", 40, 600):
-  raise HTTPException(429, "You're sending messages too quickly. Please wait a moment.")
+  raise HTTPException(429, "Whoa, you're moving fast! 🏎️ Let's take a quick 1-minute break before the next question.")
  text = p.message.strip()
  if not text: raise HTTPException(400, "Empty message")
 
@@ -510,7 +519,9 @@ def chat(p: Chat, user: dict = Depends(current_user)):
    q.put({"type": "result", "data": {"conversation_id": cid, **result}})
   except Exception as e:
    logger.exception("answer_math failed")
-   err_result = {"success": False, "operation": None, "result": None, "steps": [], "verification": None, "response": f"I couldn't process that: {e}", "error": str(e)}
+   err_result = {"success": False, "operation": None, "result": None, "steps": [], "verification": None,
+                 "response": "Oops, I ran into an issue processing that. Please try rephrasing your question!",
+                 "error": str(e)}
    save(cid, "assistant", err_result["response"], err_result)
    q.put({"type": "result", "data": {"conversation_id": cid, **err_result}})
 
@@ -527,7 +538,7 @@ def chat(p: Chat, user: dict = Depends(current_user)):
 @app.post("/api/extract")
 def extract(files: list[UploadFile] = File(...), user: dict = Depends(current_user)):
  if not limiter.allow(f"extract:{user['id']}", 15, 600):
-  raise HTTPException(429, "You're uploading too quickly. Please wait a moment.")
+  raise HTTPException(429, "Slow down a bit! 📄 Let's wait a minute before uploading more files.")
  if len(files) > MAX_FILES:
   raise HTTPException(400, f"Upload at most {MAX_FILES} files at a time.")
  loaded = [(f.filename or "upload", f.file.read(MAX_BYTES + 1)) for f in files]

@@ -1519,19 +1519,12 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
             answer = response.json().get("response", "").strip()
             if answer:
                 return _normalize_math_markup(answer)
-    except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError):
-        logger.exception(
-            "Conversational model request failed (provider=%s, model=%s)",
-            LLM_PROVIDER,
-            GROQ_MODEL if LLM_PROVIDER == "groq" else OLLAMA_MODEL,
-        )
-    return (
-        "I received your follow-up and can see the conversation history, but the "
-        "conversational model is currently unavailable. On Render, configure "
-        "LLM_PROVIDER=groq with a valid GROQ_API_KEY (and optionally GROQ_MODEL), "
-        "or point OLLAMA_URL to a reachable hosted Ollama instance. "
-        "Your deterministic SymPy calculations are still available."
-    )
+    except (requests.RequestException, ValueError, KeyError, TypeError, RuntimeError) as e:
+        logger.exception("Conversational model request failed")
+        if isinstance(e, requests.RequestException) and getattr(e.response, 'status_code', None) == 429:
+            return "I'm thinking a little too fast! 🧠 Please wait 90 seconds and try again."
+
+    return "I'm having a little trouble connecting to my brain right now. Please try sending that again in a moment!"
 
 
 def _is_replay_request(text: str) -> bool:
@@ -1641,11 +1634,12 @@ def answer_math(text: str, history: list[dict] | None = None, on_event: Callable
                 return deep
         return {
             "success": False, "operation": None, "result": None, "steps": [],
-            "verification": None, "response": f"I couldn't process that request: {error}",
+            "verification": None,
+            "response": "I couldn't quite parse that math. Could you double-check the formatting and try again?"
         }
     except Exception:
         return {
             "success": False, "operation": None, "result": None, "steps": [],
             "verification": None,
-            "response": "Something went wrong while processing this calculation. Please check the expression and try again.",
+            "response": "Oops, my calculator slipped up. Please try rephrasing the problem!",
         }

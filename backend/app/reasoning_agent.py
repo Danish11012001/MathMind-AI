@@ -30,7 +30,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 REASONING_MODEL = os.getenv("GROQ_REASONING_MODEL", "openai/gpt-oss-120b")
 REASONING_EFFORT = os.getenv("GROQ_REASONING_EFFORT", "high").strip().lower()
 MAX_STEPS = int(os.getenv("JEE_MAX_STEPS", "12"))
-SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "3")), 3))
+SAMPLES = max(1, min(int(os.getenv("JEE_SAMPLES", "1")), 3))
 DEADLINE = float(os.getenv("JEE_DEADLINE_SECONDS", "120"))
 VERIFY_ENABLED = os.getenv("JEE_VERIFY", "1").strip() != "0"
 MAX_FIX_ROUNDS = max(0, int(os.getenv("JEE_FIX_ROUNDS", "2")))
@@ -332,8 +332,8 @@ REGISTRY: dict[str, tuple[Callable[..., str], str, dict]] = {
                   _schema({"matrix": _S, "op": _S}, ["matrix", "op"])),
 
     "advanced_math": (t_wolfram, "Query Agent for advanced math, integrals, PDEs, or when SymPy fails. "
-                           "Use standard math syntax (e.g. 'integrate x^3/(e^x - 1) from 0 to infinity').",
-                _schema({"query": _S}, ["query"])),
+                                 "Use standard math syntax (e.g. 'integrate x^3/(e^x - 1) from 0 to infinity').",
+                      _schema({"query": _S}, ["query"])),
 
 }
 TOOL_SPECS = [
@@ -453,8 +453,7 @@ def _chat(messages: list[dict], model: str, temperature: float, use_tools: bool 
                              "Shorten it, or upgrade the Groq tier.")
         break
     if response.status_code == 429:
-        raise AgentError("The AI service is rate-limited right now (Groq's per-minute token limit). "
-                         "Please try again in a minute, or set JEE_SAMPLES=1.")
+        raise AgentError("I'm thinking a little too fast! 🧠 My engine hit a speed limit. Please wait about 90 seconds and send your message again.")
     if response.status_code == 400 and "tool_use_failed" in response.text:
         raise ValueError("tool_use_failed")
     if response.status_code >= 400:
@@ -753,8 +752,14 @@ def solve_hard(question: str, history: list[dict] | None = None,
 
     if chosen is None:
         message = str(error or "The solver failed.")
+        # Clean up the message so it doesn't show raw Python errors
+        if "429" in message or "rate" in message.lower():
+            friendly_msg = "I need a quick breather! Please wait a minute and try again."
+        else:
+            friendly_msg = "I got a bit stuck on this problem. Could you try rephrasing it or breaking it into smaller steps?"
+
         return {"success": False, "operation": "deep_solve", "result": None, "steps": [],
-                "verification": None, "response": message, "error": message}
+                "verification": None, "response": friendly_msg, "error": message}
 
     state = verdict["verdict"] if verdict else "off"
     evidence = (verdict or {}).get("evidence", "")
