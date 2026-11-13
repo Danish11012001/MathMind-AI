@@ -8,6 +8,7 @@ import random
 import re
 import time
 from typing import Any, Callable
+import wolframalpha
 
 import requests
 import sympy as sp
@@ -165,6 +166,31 @@ def t_solve_equations(equations: list[str], variables: list[str], domain: str = 
         return sp.sstr(sp.solveset(eqs[0], syms[0], domain=sp.S.Reals))
     return sp.sstr(sp.solve(eqs, syms, dict=True))
 
+def t_wolfram(query: str) -> str:
+    app_id = os.getenv("WOLFRAM_APP_ID")
+    if not app_id:
+        return "Agent API key is not configured."
+    try:
+        client = wolframalpha.Client(app_id)
+        res = client.query(query)
+
+        # 1. Try to get the primary result
+        if res.results:
+            try:
+                answer = next(res.results).text
+                if answer:
+                    return f"Agent Answer: {answer}"
+            except StopIteration:
+                pass
+
+        # 2. If primary result is empty, look for any text in the pods
+        for pod in res.pods:
+            if pod.text:
+                return f"Agent Answer: {pod.text}"
+
+        return "Agent returned no text results for this query (it might only have a graph/image)."
+    except Exception as e:
+        return f"Agent could not solve this: {str(e)}"
 
 def t_solve_inequality(inequality: str, variable: str) -> str:
     rel = _P(inequality)
@@ -304,6 +330,11 @@ REGISTRY: dict[str, tuple[Callable[..., str], str, dict]] = {
     "matrix_op": (t_matrix_op, "Matrix operation on a matrix like '[[1,2],[3,4]]'. "
                                "op: det, inverse, rank, eigenvals, eigenvects, transpose, trace, rref, nullspace, charpoly.",
                   _schema({"matrix": _S, "op": _S}, ["matrix", "op"])),
+
+    "advanced_math": (t_wolfram, "Query Agent for advanced math, integrals, PDEs, or when SymPy fails. "
+                           "Use standard math syntax (e.g. 'integrate x^3/(e^x - 1) from 0 to infinity').",
+                _schema({"query": _S}, ["query"])),
+
 }
 TOOL_SPECS = [
     {"type": "function", "function": {"name": n, "description": d, "parameters": p}}
@@ -357,7 +388,7 @@ SYSTEM_PROMPT = """You are MathMind's deep-solve engine for JEE Main/Advanced le
 Method:
 1. Restate what is asked in one line. For multiple-choice, note the options.
 2. Identify the concepts/theorems involved and choose a plan.
-3. Do EVERY calculation with the tools (algebra, calculus, matrices, counting, numeric checks). Never do non-trivial arithmetic in your head.
+3. Do EVERY calculation with the tools (algebra, calculus, matrices, counting, numeric checks). Never do non-trivial arithmetic in your head. If SymPy tools fail, hang, or return an error, IMMEDIATELY use the `advanced_math` tool as a fallback.
 4. VERIFY before answering: substitute your answer back into the original conditions (substitute), or recompute a different way and compare with check_equal. Check domain restrictions, extraneous roots, signs, and edge cases. If a check fails, fix the solution.
 5. For multiple-choice, test each option rather than guessing.
 6. SANITY-CHECK every derived formula against what the problem implies BEFORE using it: sign (an integral of a positive function over a positive range is positive; lengths, areas and probabilities cannot be negative; a probability is in [0,1]), domain, and size. If a derived formula contradicts such a fact, your setup or algebra is WRONG: find the mistake. Never "match", "approximate" or drop terms to force agreement with a given option or a desired value.
