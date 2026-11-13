@@ -372,10 +372,9 @@ Final response format (Markdown):
 - The LAST line must be exactly: FINAL_ANSWER: <the answer only, e.g. 3/4, (B), or x = 2 or x = 3>
 - IMPORTANT: Do not use line breaks inside math equations. Keep all equations on a single line unless you are using a \begin{aligned} environment.
 Always use underscores for subscripts (e.g., write `x_0`, NOT `x0`).
+-IMPORTANT: Do not use conversational filler like "MathMind:" or "Assistant:". Start directly with the solution steps.
 - Always write limits correctly using `\lim_{x_0 \to \infty} \frac{...}{...}`.
 Be honest: if you could not verify something or the problem is ambiguous, say so instead of guessing."""
-
-
 class AgentError(RuntimeError):
     pass
 

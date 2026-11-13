@@ -27,7 +27,10 @@ from sympy.parsing.sympy_parser import (
     parse_expr,
     standard_transformations,
 )
-
+try:
+    from .auditor import latex_to_plain
+except ImportError:
+    from auditor import latex_to_plain
 try:
     from . import reasoning_agent
 except ImportError:
@@ -170,6 +173,18 @@ def fallback(text: str) -> dict:
     low = s.lower()
 
     plot_match = re.search(r"(?i)(?:plot|graph|draw)\s+(?:the\s+)?(?:function\s+)?(?:of\s+)?(?:y\s*=\s*)?(.+)", s)
+    # NEW: LaTeX Integral Detection
+    int_idx = s.find("\\int")
+    if int_idx != -1:
+        s_int = s[int_idx:]
+        s_int = re.sub(r'\\\]$', '', s_int).strip()
+        int_match = re.search(r'\\int\s*(?:_\{?([^}]+)\}?)?\s*(?:\^\{?([^}]+)\}?)?\s*(.+?)\s*d\s*([a-zA-Z])', s_int)
+        if int_match:
+            lower, upper, exp_str, var = int_match.groups()
+            lower = lower.replace("\\infty", "oo") if lower else None
+            upper = upper.replace("\\infty", "oo") if upper else None
+            clean_exp = latex_to_plain(exp_str)
+            return {"category": "calculus", "operation": "integral", "expression": clean_exp, "variable": var, "lower": lower, "upper": upper}
     if plot_match:
         raw = plot_match.group(1).strip()
         return {"category": "plotting", "operation": "plot", "expression": raw, "variable": "x"}
@@ -1266,14 +1281,41 @@ def _split_tasks(text: str) -> list[str]:
     raw = text.strip()
     if not raw:
         return []
+
+    # 1. HIGHEST PRIORITY: Split by numbered lists (e.g., "1. ... 2. ..." or "Q1: ... Q2: ...")
+    numbered_matches = list(re.finditer(r'(?m)^\s*(?:\d+[\.\)]|[A-Z][\.\)]|Q\d+[\.\):])\s+', raw))
+    if len(numbered_matches) > 1:
+        tasks = []
+        for i in range(len(numbered_matches)):
+            start = numbered_matches[i].start()
+            end = numbered_matches[i+1].start() if i+1 < len(numbered_matches) else len(raw)
+            task = raw[start:end].strip()
+            task = re.sub(r'^\s*(?:\d+[\.\)]|[A-Z][\.\)]|Q\d+[\.\):])\s*', '', task)
+            if task:
+                tasks.append(task)
+        if tasks:
+            return tasks
+
+    # 2. PROTECT COMPLEX MATH: If it contains LaTeX or Integrals, DO NOT split by newlines/punctuation.
+    # Instead, only split if there are explicit conjunctions ("and solve", "and find", etc.)
+    if "\\[" in raw or "$$" in raw or "\\int" in raw or "\\frac" in raw or "\\sum" in raw:
+        # Look for "and solve", "and find", "also calculate", etc.
+        splits = re.split(r'(?i)\s+(?:and|also|then)\s+(?=(?:find|solve|calculate|compute|evaluate|determine|differentiate|integrate|factor|simplify|expand|give me|what is|what are|how many)\b)', raw)
+        if len(splits) > 1:
+            return [s.strip() for s in splits if s.strip()]
+        return [raw] # Keep it as ONE single complex block
+
+    # 3. STANDARD SPLITTING: Split by newlines, semicolons, or question marks
     chunks = re.split(r"(?:\n+|\s*[;]\s*|\s*\?\s*)", raw)
     pieces: list[str] = []
     for chunk in chunks:
         chunk = re.sub(r"^\s*(?:(?:\d+\s*[.)])|[-*•])\s*", "", chunk).strip(" \t\r\n.?!")
         if not chunk:
             continue
+
+        # 4. SMART CONTEXT SWITCHING: Within a sentence, split by "and find", "also solve", "then integrate", or just "find", "solve" followed by a space.
         starts = list(re.finditer(
-            r"(?i)(?<!^)(?<![.!?])\s+(?=(?:find|solve|calculate|compute|evaluate|determine|what is|what are|how many|differentiate|integrate|factor|simplify|expand|classify|give me)\b)",
+            r"(?i)(?<!^)(?<![.!?])\s+(?:and\s+|also\s+|then\s+)?(?=(?:find|solve|calculate|compute|evaluate|determine|what is|what are|how many|differentiate|integrate|factor|simplify|expand|classify|give me)\b)",
             chunk,
         ))
         if starts:
@@ -1289,6 +1331,7 @@ def _split_tasks(text: str) -> list[str]:
                 pieces.append(tail)
         else:
             pieces.append(chunk)
+
     return [p for p in pieces if p]
 
 def _fix_display_math(text: str) -> str:
@@ -1419,6 +1462,7 @@ def _conversational_reply(text: str, history: list[dict] | None = None) -> str:
 
     prompt = (
         "You are MathMind, a helpful conversational mathematical assistant. "
+        "Do not prefix your response with 'MathMind:' or 'Assistant:'. Start directly with the answer.\n"
         "Use the conversation history to resolve references such as 'it', 'that', "
         "'the previous answer', and 'all five'. When the user asks to explain, "
         "explain every referenced problem or item, not just the first one. "
