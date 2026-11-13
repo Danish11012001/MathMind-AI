@@ -392,7 +392,8 @@ Method:
 4. VERIFY before answering: substitute your answer back into the original conditions (substitute), or recompute a different way and compare with check_equal. Check domain restrictions, extraneous roots, signs, and edge cases. If a check fails, fix the solution.
 5. For multiple-choice, test each option rather than guessing.
 6. SANITY-CHECK every derived formula against what the problem implies BEFORE using it: sign (an integral of a positive function over a positive range is positive; lengths, areas and probabilities cannot be negative; a probability is in [0,1]), domain, and size. If a derived formula contradicts such a fact, your setup or algebra is WRONG: find the mistake. Never "match", "approximate" or drop terms to force agreement with a given option or a desired value.
-7. If you cannot reach a rigorous, verified answer, do not guess. Make the last line exactly: FINAL_ANSWER: UNSURE, and explain in the body what you could not establish.
+7. PROBABILITY TRAP WARNING: When a problem says "randomly distributed", each object is distributed independently, even if the problem says they are "identical". To find the correct probability, you MUST temporarily label the identical objects to find the true physical sample space (e.g., 3^4 for 4 balls in 3 boxes). Do NOT use Stars and Bars to calculate probability weights unless the problem explicitly states that all visually distinct configurations are equally likely. Identical objects in a random experiment follow Maxwell-Boltzmann statistics for probability (like distinct particles), not Bose-Einstein.
+8. If you cannot reach a rigorous, verified answer, do not guess. Make the last line exactly: FINAL_ANSWER: UNSURE, and explain in the body what you could not establish.
 
 Tool syntax: plain text only. Use * for multiplication, ** or ^ for powers, sqrt(), pi, I (imaginary unit), E (Euler's number), oo (infinity). No LaTeX in tool arguments, no attribute access (x.is_real), no quotes.
 
@@ -466,15 +467,22 @@ def _context(history: list[dict] | None) -> str:
     return "\n".join(parts)[-5000:]
 
 
-VERIFIER_PROMPT = """You are an independent, skeptical verifier of math answers. You receive a PROBLEM and a CLAIMED answer. Do not trust the claim.
+VERIFIER_PROMPT = """You are an independent, ruthless, skeptical verifier of math answers. You receive a PROBLEM and a CLAIMED answer. Your job is to find FLAWS in the setup and reasoning. Do not trust the claim.
 
 Rules:
-1. Check with tools: plug the claimed answer back into the original conditions (substitute / check_equal) and/or solve the problem independently by a DIFFERENT method.
+1. Check with tools: plug the claimed answer back into the original conditions and/or solve the problem independently by a DIFFERENT method.
 2. You MUST run at least one tool and base your verdict on its output.
-3. Check completeness: every part asked for, every valid root or case, extraneous roots, domain restrictions, signs, and (for multiple choice) that the chosen option matches the computed value.
-4. Tool syntax: plain text only. Use * for multiplication, ** or ^ for powers, sqrt(), pi, I, E, oo. No LaTeX.
-5. Reply with ONLY a JSON object, no other text:
-{"verdict": "correct" | "incorrect" | "inconclusive", "evidence": "<1-3 sentences citing tool results>", "corrected_answer": "<the right answer if you found one, else empty>"}
+3. UNIVERSAL TRAP CHECKLIST: Scan the problem and solution for these common traps:
+   - PROBABILITY SAMPLE SPACE: If objects are "identical" but distributed "randomly", treating visually distinct arrangements as equally likely is a FATAL ERROR (Bose-Einstein vs Maxwell-Boltzmann). You must treat identical objects as distinct (e.g., using 3^N or Stirling numbers) unless stated otherwise.
+   - SQUARE ROOT: Did they take a square root and forget the ±? Did they forget that sqrt(x^2) = |x|?
+   - DOMAIN: Did they divide by zero or take the log/sqrt of a negative number without restricting the domain?
+   - EXTRANEOUS ROOTS: If they squared both sides, did they plug the answers back in?
+   - BOUNDARY CONDITIONS: For ODEs/PDEs, do they satisfy ALL initial/boundary conditions?
+   - UNPROVEN ASSUMPTIONS: Did they assume a matrix is invertible, a series converges, or a function is continuous without proof?
+4. Check completeness: every part asked for, every valid root or case, and for multiple choice, that the chosen option matches the computed value.
+5. Tool syntax: plain text only. Use * for multiplication, ** or ^ for powers, sqrt(), pi, I, E, oo. No LaTeX.
+6. Reply with ONLY a JSON object, no other text:
+{"verdict": "correct" | "incorrect" | "inconclusive", "evidence": "<1-3 sentences citing tool results and the specific trap violated>", "corrected_answer": "<the right answer if you found one, else empty>"}
 Use "inconclusive" if you could not decide. Never answer "correct" without tool evidence."""
 
 
